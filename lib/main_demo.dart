@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:lstracker/app_config/app_config.dart';
 import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/data/services/dio_client.dart';
 import 'package:lstracker/features/dashboard/dashboard_screen.dart';
@@ -75,6 +76,9 @@ Future<void> main() async {
 
   await AppDatabase.instance.database;
   await ensureMetadataSchema();
+
+  // Basculer l’API sur l’environnement DEMO
+  AppConfig.overrideBase('http://38.242.195.91:9200');
 
   final authStore = AuthStore();
   final boot = await bootstrap(authStore);

@@ -1,0 +1,232 @@
+import 'package:flutter/material.dart';
+import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/utils/custom_date_utils.dart';
+import 'package:lstracker/widgets/global_bottom_nav.dart';
+
+import '../../data/db/sample_dao.dart';
+import '../../data/models/sample.dart';
+import '../samples/sample_result_collect_screen.dart';
+
+class ResultsReadyListScreen extends StatefulWidget {
+  static const route = '/results-ready/list';
+  const ResultsReadyListScreen({super.key});
+
+  @override
+  State<ResultsReadyListScreen> createState() => _ResultsReadyListScreenState();
+}
+
+class _ResultsReadyListScreenState extends State<ResultsReadyListScreen> {
+  final dao = SampleDao();
+
+  bool _bootstrapped = false;
+  bool _loading = true;
+  String? _error;
+
+  late int _labId;
+  late String _labName;
+  late String _type;
+
+  final _searchCtl = TextEditingController();
+  List<Sample> _items = const [];
+  final Set<int> _selected = {};
+
+  @override
+  void dispose() {
+    _searchCtl.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_bootstrapped) return;
+    _bootstrapped = true;
+
+    final args =
+        ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+    _labId = (args?['labId'] as int?) ?? 0;
+    _labName = (args?['labName'] as String?) ?? 'Labo';
+    _type = (args?['type'] as String?) ?? 'Autre';
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final items = await dao.listReadyByLabAndType(
+        labId: _labId,
+        type: _type,
+        query: _searchCtl.text.trim().isEmpty ? null : _searchCtl.text.trim(),
+        limit: 500,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = items;
+        _selected.clear();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Erreur: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _toggle(int id, bool v) {
+    setState(() {
+      if (v) {
+        _selected.add(id);
+      } else {
+        _selected.remove(id);
+      }
+    });
+  }
+
+  void _collect() async {
+    if (_selected.isEmpty) return;
+    final changed = await Navigator.of(context).pushNamed(
+      SampleResultCollectScreen.route,
+      arguments: {'ids': _selected.toList()},
+    );
+    if (changed == true) {
+      await _load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Collecte enregistrée.')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = '$_type — $_labName';
+    final canCollect = _selected.isNotEmpty;
+    return FutureBuilder<String?>(
+      future: AuthUtils.getUserRole(),
+      builder: (context, snapshot) {
+        final userRole = snapshot.data ?? 'ADMIN';
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(title),
+            actions: [
+              IconButton(
+                tooltip: 'Rechercher',
+                icon: const Icon(Icons.search),
+                onPressed: () async {
+                  final q = await showDialog<String>(
+                    context: context,
+                    builder: (_) {
+                      return AlertDialog(
+                        title: const Text('Recherche'),
+                        content: TextField(
+                          controller: _searchCtl,
+                          decoration: const InputDecoration(
+                            hintText: 'Code patient / ID échantillon',
+                          ),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, null),
+                            child: const Text('Annuler'),
+                          ),
+                          FilledButton(
+                            onPressed: () =>
+                                Navigator.pop(context, _searchCtl.text),
+                            child: const Text('Appliquer'),
+                          ),
+                        ],
+                      );
+                    },
+                  );
+                  if (q != null) _load();
+                },
+              ),
+            ],
+          ),
+          floatingActionButton: canCollect
+              ? FloatingActionButton.extended(
+                  icon: const Icon(Icons.assignment_return_outlined),
+                  label: const Text('Collecter résultats'),
+                  onPressed: _collect,
+                )
+              : null,
+          bottomNavigationBar: GlobalBottomNav(
+            current: BottomTab.accept,
+            userRole: userRole,
+          ),
+          body: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null
+              ? Center(child: Text(_error!))
+              : _items.isEmpty
+              // ---- ÉTAT VIDE EXPLICITE ----
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(
+                          Icons.assignment_outlined,
+                          size: 64,
+                          color: Colors.grey,
+                        ),
+                        SizedBox(height: 16),
+                        Text(
+                          'Aucun échantillon prêt trouvé pour ce type.\n'
+                          'Les résultats ne sont pas encore disponibles.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 16, color: Colors.black54),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              // ---- LISTE AVEC SÉLECTION ----
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView.separated(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: _items.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (_, i) {
+                      final s = _items[i];
+                      final id = s.id!;
+                      final subtitle = [
+                        if ((s.patientIdentifier ?? '').isNotEmpty)
+                          'Patient: ${s.patientIdentifier}',
+                        if ((s.sampleIdentifier ?? '').isNotEmpty)
+                          'ID: ${s.sampleIdentifier}',
+                        if ((s.labNumber ?? '').isNotEmpty)
+                          'Numéro Labo: ${s.labNumber}',
+                        if ((s.collectionDate ?? '').isNotEmpty)
+                          'Prélèvement: ${CustomDateUtils.toHumanReadable(s.collectionDate)}',
+                        if ((s.analysisReleasedDate ?? '').isNotEmpty)
+                          'Validation: ${CustomDateUtils.toHumanReadable(s.analysisReleasedDate)}',
+                      ].join('\n');
+
+                      return Card(
+                        child: CheckboxListTile(
+                          value: _selected.contains(id),
+                          onChanged: (v) => _toggle(id, v ?? false),
+                          title: Text(
+                            s.sampleIdentifier?.isNotEmpty == true
+                                ? s.sampleIdentifier!
+                                : (s.uuid ?? '—'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: subtitle.isEmpty ? null : Text(subtitle),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+        );
+      },
+    );
+  }
+}

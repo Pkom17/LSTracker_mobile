@@ -1,21 +1,7 @@
-<<<<<<< HEAD
-# lstracker
 
-A new Flutter project.
-
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
-=======
-# TransportDNO
-Version flutter
->>>>>>> fc4bb806fb44efb4a0df811f47fd91fe8d7b517d
+## LSTracker
+# version
+2.1.0 : 29/10.2025
+Ajout dashbaord pour compte USER
+Ajout du support pour  la prise en charge des tailles de page de mémoire de 16 ko
+Ajout du nom laboratoire de destination dans la liste des échantillons

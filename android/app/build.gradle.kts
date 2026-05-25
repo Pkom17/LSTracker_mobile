@@ -17,12 +17,12 @@ android {
         applicationId = "ci.itech.lstracker"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = flutter.versionCode.toInt()
+        versionName = flutter.versionName
         multiDexEnabled = true
         vectorDrawables.useSupportLibrary = true
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -87,6 +87,7 @@ android {
 
 dependencies {
     implementation("androidx.multidex:multidex:2.0.1")
+    implementation("androidx.core:core-ktx:1.13.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 

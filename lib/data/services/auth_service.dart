@@ -1,5 +1,10 @@
 import 'package:dio/dio.dart';
+import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/data/services/dio_client.dart';
+import 'package:lstracker/data/services/log_service.dart';
+import 'package:lstracker/features/dashboard/_dashboard_sections.dart'
+    show DashboardInfoNote;
+import 'package:lstracker/utils/auth_utils.dart';
 
 import '../../../app_config/app_config.dart';
 import '../db/app_database.dart';
@@ -37,6 +42,21 @@ class AuthService {
     final role = (data['role'] as String).toUpperCase();
     final userId = (data['user_id'] as int?) ?? 0;
 
+    // Si le nouvel utilisateur est DIFFÉRENT du dernier connecté, on purge la
+    // BD locale pour éviter que le compte B voie les samples du compte A.
+    // Si c'est le même utilisateur (re-login après expiration de session),
+    // on conserve la BD locale et les samples dirty éventuels.
+    final previousUserId = await _authStore.userId;
+    if (previousUserId != null && previousUserId != userId) {
+      LogService.instance.info(
+        'Auth',
+        'login: changement d\'utilisateur ($previousUserId → $userId), purge de la BD locale',
+      );
+      await _authStore.purgeLocalDataForLogout(keepUsername: true);
+      // Réaffiche le bandeau d'aide des dashboards pour le nouvel utilisateur.
+      DashboardInfoNote.resetForNewSession();
+    }
+
     await _authStore.saveSession(
       accessToken: accessToken,
       role: role,
@@ -60,7 +80,18 @@ class AuthService {
     return {'role': role, 'userId': userId};
   }
 
-  Future<void> logout() async {
+  /// Termine la session utilisateur :
+  ///  - arrête l'auto-sync (timer + listener réseau)
+  ///  - notifie le serveur (révocation du refresh token)
+  ///  - purge toutes les données locales (tokens + BD locale)
+  ///  - retire le header Authorization du Dio singleton
+  ///
+  /// `purgeLocalData`: si false, on garde la BD locale (utile pour les
+  /// scénarios de re-login imminent du même utilisateur). Par défaut true
+  /// pour éviter la fuite inter-comptes.
+  Future<void> logout({bool purgeLocalData = true}) async {
+    LogService.instance.info('Auth', 'logout déclenché (purge=$purgeLocalData)');
+    AutoSyncManager.instance.stop();
     try {
       final rt = await _authStore.refreshToken;
       if (rt != null) {
@@ -69,10 +100,21 @@ class AuthService {
           data: {'refresh_token': rt},
         );
       }
-    } catch (_) {
+    } catch (e) {
+      // Pas grave si le serveur ne répond pas : on poursuit le logout local.
+      LogService.instance.warn('Auth', 'logout: serveur injoignable, on continue', error: e);
     } finally {
-      await _authStore.clearSession();
       _dio.options.headers.remove('Authorization');
+      if (purgeLocalData) {
+        await _authStore.purgeLocalDataForLogout();
+      } else {
+        await _authStore.clearSession();
+      }
+      // Vide le cache rôle/userId pour que la prochaine session ne
+      // réutilise pas les valeurs du compte précédent.
+      AuthUtils.clearCache();
+      // Réaffiche le bandeau d'aide des dashboards à la prochaine session.
+      DashboardInfoNote.resetForNewSession();
     }
   }
 }

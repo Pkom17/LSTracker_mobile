@@ -1,10 +1,22 @@
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 class AppDatabase {
   static const _dbName = 'sample_tracker.db';
-  static const _dbVersion = 3; // v3: ajout table circuit_site (many-to-many)
+  // v4: ajoute les colonnes de robustesse sync sur la table sample
+  //   - has_conflict       : 1 si pull a détecté un conflit avec un dirty local
+  //   - last_sync_attempt  : ISO timestamp du dernier essai de push
+  //   - last_sync_error    : message d'erreur du dernier essai de push (null si OK)
+  //   - server_version     : version optimiste serveur (préparation conflits)
+  //
+  // v5: index manquants pour la perf des grosses bases (5k–10k samples) :
+  //   - idx_sample_created_at        : ORDER BY created_at DESC sur les listes paginées
+  //   - idx_sample_lastupdated_at    : ORDER BY lastupdated_at ASC pour les dirty
+  //   - idx_sample_external_id       : lookup au pull (upsertFromServer, très fréquent)
+  //   - idx_sample_dirty_lastupdated : composite pour les push (dirty=1 + tri temporel)
+  static const _dbVersion = 5;
 
   static final AppDatabase instance = AppDatabase._internal();
   AppDatabase._internal();
@@ -15,6 +27,34 @@ class AppDatabase {
     if (_db != null) return _db!;
     _db = await _initDb();
     return _db!;
+  }
+
+  /// **Pour les tests uniquement.** Injecte une [Database] déjà ouverte
+  /// (typiquement en mémoire via sqflite_common_ffi) pour que tous les
+  /// DAOs qui passent par [AppDatabase.instance.database] tapent sur
+  /// cette base au lieu d'essayer d'ouvrir le fichier sur disque (qui
+  /// échouerait en `flutter test` faute de `path_provider`).
+  ///
+  /// À appeler dans `setUp()` après avoir initialisé `databaseFactory`.
+  /// Réinitialise via [resetForTests] en `tearDown()`.
+  @visibleForTesting
+  set databaseForTests(Database db) => _db = db;
+
+  /// Ferme et oublie la DB courante. À appeler en `tearDown()` pour
+  /// que le test suivant reparte d'une base propre.
+  @visibleForTesting
+  Future<void> resetForTests() async {
+    final cur = _db;
+    _db = null;
+    if (cur != null && cur.isOpen) await cur.close();
+  }
+
+  /// Crée le schéma complet de la dernière version (`_dbVersion`) sur
+  /// la base fournie. Public pour permettre aux helpers de test de
+  /// préparer une DB en mémoire identique à la prod.
+  @visibleForTesting
+  Future<void> createSchemaForTesting(Database db) async {
+    await _createSchema(db);
   }
 
   Future<Database> _initDb() async {
@@ -40,6 +80,14 @@ class AppDatabase {
 INSERT OR IGNORE INTO circuit_site (circuit_id, site_id)
 SELECT circuit_id, id FROM site WHERE circuit_id IS NOT NULL;
 ''');
+        }
+        if (oldV < 4) {
+          // v4: colonnes de robustesse sync sur la table sample.
+          await _addSyncRobustnessColumns(db);
+        }
+        if (oldV < 5) {
+          // v5: index de perf manquants pour grosses bases.
+          await _addPerformanceIndexes(db);
         }
       },
     );
@@ -116,6 +164,64 @@ CREATE TABLE sample (
       'CREATE INDEX idx_sample_from_site ON sample(from_site_id);',
     );
     await db.execute('CREATE INDEX idx_sample_dirty ON sample(dirty);');
+
+    // v4 columns also created on fresh installs
+    await _addSyncRobustnessColumns(db);
+    // v5 indexes also created on fresh installs
+    await _addPerformanceIndexes(db);
+  }
+
+  /// v5: index de perf pour les listes paginées et le pull/push.
+  /// Tous en IF NOT EXISTS pour rester sûrs lors d'un upgrade partiel.
+  Future<void> _addPerformanceIndexes(Database db) async {
+    // ORDER BY created_at DESC sur les listes paginées (sample_list,
+    // results_ready, etc.). Sans cet index, SQLite trie 10k lignes en
+    // mémoire à chaque page → loader visible.
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sample_created_at ON sample(created_at);',
+    );
+    // ORDER BY lastupdated_at ASC dans getDirtySamples().
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sample_lastupdated_at ON sample(lastupdated_at);',
+    );
+    // Lookup au pull (upsertFromServer) — appelé pour CHAQUE sample reçu.
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sample_external_id ON sample(external_id);',
+    );
+    // Composite (dirty, lastupdated_at) pour le push : filtre + tri d'un coup.
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sample_dirty_lastupdated ON sample(dirty, lastupdated_at);',
+    );
+  }
+
+  /// v4: adds sync-robustness columns to the {@code sample} table.
+  /// Safe to call on a fresh DB (uses IF NOT EXISTS via best-effort checks)
+  /// or as an upgrade step from v3.
+  Future<void> _addSyncRobustnessColumns(Database db) async {
+    // SQLite < 3.35 does not support ADD COLUMN IF NOT EXISTS, so we probe
+    // the schema and add what is missing.
+    final existing = <String>{};
+    final rows = await db.rawQuery('PRAGMA table_info(sample)');
+    for (final r in rows) {
+      final name = r['name'];
+      if (name is String) existing.add(name);
+    }
+
+    Future<void> addIfMissing(String column, String typeAndDefault) async {
+      if (!existing.contains(column)) {
+        await db.execute('ALTER TABLE sample ADD COLUMN $column $typeAndDefault');
+      }
+    }
+
+    await addIfMissing('has_conflict', 'INTEGER NOT NULL DEFAULT 0');
+    await addIfMissing('last_sync_attempt', 'TEXT');
+    await addIfMissing('last_sync_error', 'TEXT');
+    await addIfMissing('server_version', 'INTEGER');
+
+    // Index dédié pour repérer rapidement les conflits.
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sample_has_conflict ON sample(has_conflict);',
+    );
   }
 
   Future<void> _createMetadataTables(Database db) async {

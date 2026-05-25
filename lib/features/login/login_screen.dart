@@ -1,5 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:lstracker/utils/auth_utils.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/services/auth_service.dart';
 import '../../data/stores/auth_store.dart';
@@ -39,6 +41,25 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _required(String? v) =>
       (v == null || v.trim().isEmpty) ? 'Requis' : null;
 
+  Future<void> _launchURL(String url) async {
+    final Uri uri = Uri.parse(url);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (mounted) {
+        setState(() {
+          _error = 'Impossible d\'ouvrir le lien: $url';
+        });
+      }
+    }
+  }
+
+  void _launchCGU() {
+    _launchURL('https://lstracker.org/legal/terms');
+  }
+
+  void _launchPrivacyPolicy() {
+    _launchURL('https://lstracker.org/legal/privacy');
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() {
@@ -51,6 +72,10 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordCtl.text,
         rememberUsername: _remember,
       );
+      // Réchauffe le cache AuthUtils avec la nouvelle session avant
+      // de naviguer vers le dashboard (sinon roleOrNull() = null au
+      // premier build et les écrans retombent sur le FutureBuilder).
+      await AuthUtils.prime();
       if (!mounted) return;
       final role = r['role'] as String;
       Navigator.of(
@@ -80,7 +105,7 @@ class _LoginScreenState extends State<LoginScreen> {
           if (e.message != null &&
               (backendMsg.isEmpty || !backendMsg.contains('${e.message}')))
             '${e.message}',
-        ].where((s) => s != null && s.toString().trim().isNotEmpty).join('\n');
+        ].where((s) => s.trim().isNotEmpty).join('\n');
       });
     } catch (e) {
       setState(() {
@@ -99,18 +124,15 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final isWide = MediaQuery.of(context).size.width > 720;
 
+    final theme = Theme.of(context);
+    final linkStyle = TextStyle(
+      color: theme.colorScheme.primary,
+      decoration: TextDecoration.underline,
+      decorationColor: theme.colorScheme.primary,
+    );
+
     return Scaffold(
       body: SingleChildScrollView(
-       /* decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Color.fromARGB(255, 188, 200, 218),
-              Color.fromARGB(255, 142, 171, 169),
-            ],
-          ),
-        ),*/
         padding: const EdgeInsets.symmetric(vertical: 40),
         reverse: true,
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -223,6 +245,46 @@ class _LoginScreenState extends State<LoginScreen> {
                                       )
                                     : const Text('Se connecter'),
                               ),
+                            ),
+                            const SizedBox(height: 16),
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 8.0, // Espace horizontal
+                              runSpacing: 4.0, // Espace vertical si wrapping
+                              children: [
+                                // Utilisation de InkWell pour un style
+                                // plus personnalisable que TextButton
+                                InkWell(
+                                  onTap: _launchCGU,
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4.0,
+                                      vertical: 2.0,
+                                    ),
+                                    child: Text('CGU', style: linkStyle),
+                                  ),
+                                ),
+                                Text(
+                                  '|',
+                                  style: TextStyle(color: theme.disabledColor),
+                                ),
+                                InkWell(
+                                  onTap: _launchPrivacyPolicy,
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4.0,
+                                      vertical: 2.0,
+                                    ),
+                                    child: Text(
+                                      'Politique de confidentialité',
+                                      style: linkStyle,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),

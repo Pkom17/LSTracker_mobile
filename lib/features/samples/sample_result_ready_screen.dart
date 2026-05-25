@@ -134,6 +134,7 @@ class _DateTimePickerFieldState extends State<DateTimePickerField> {
               labelText: widget.dateLabel,
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
+                tooltip: 'Sélectionner une date',
                 icon: const Icon(Icons.calendar_month_outlined),
                 onPressed: _pickDate,
               ),
@@ -151,6 +152,7 @@ class _DateTimePickerFieldState extends State<DateTimePickerField> {
               labelText: widget.timeLabel,
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
+                tooltip: "Sélectionner une heure",
                 icon: const Icon(Icons.access_time),
                 onPressed: _pickTime,
               ),
@@ -324,14 +326,12 @@ class _SampleResultReadyScreenState extends State<SampleResultReadyScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snap) {
-        final role = snap.data ?? 'ADMIN';
-        final title =
-            'Résultat prêt \n ${_sample?.labNumber ?? _sample?.patientIdentifier ?? _sample?.uuid ?? ''}';
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final role = AuthUtils.roleOrNull() ?? 'ADMIN';
+    final title =
+        'Résultat prêt \n ${_sample?.labNumber ?? _sample?.patientIdentifier ?? _sample?.uuid ?? ''}';
 
-        return Scaffold(
+    return Scaffold(
           appBar: AppBar(title: Text(title)),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.accept,
@@ -425,8 +425,6 @@ class _SampleResultReadyScreenState extends State<SampleResultReadyScreen> {
                           ],
                         ),
                       )),
-        );
-      },
     );
   }
 }

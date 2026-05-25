@@ -143,6 +143,7 @@ class _SampleAnalysisFailScreenState extends State<SampleAnalysisFailScreen> {
                     labelText: 'Date',
                     border: const OutlineInputBorder(),
                     suffixIcon: IconButton(
+                      tooltip: 'Sélectionner une date',
                       icon: const Icon(Icons.calendar_month_outlined),
                       onPressed: _pickDate,
                     ),
@@ -158,6 +159,7 @@ class _SampleAnalysisFailScreenState extends State<SampleAnalysisFailScreen> {
                     labelText: 'Heure',
                     border: const OutlineInputBorder(),
                     suffixIcon: IconButton(
+                      tooltip: "Sélectionner une heure",
                       icon: const Icon(Icons.access_time),
                       onPressed: _pickTime,
                     ),

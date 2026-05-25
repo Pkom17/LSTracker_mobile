@@ -139,11 +139,9 @@ class _SampleResultCollectScreenState extends State<SampleResultCollectScreen> {
   @override
   Widget build(BuildContext context) {
     final count = _ids.length;
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(
             title: Text('Collecter résultats — $count sélection(s)'),
           ),
@@ -182,6 +180,7 @@ class _SampleResultCollectScreenState extends State<SampleResultCollectScreen> {
                           labelText: 'Date de collecte',
                           border: const OutlineInputBorder(),
                           suffixIcon: IconButton(
+                            tooltip: 'Sélectionner une date',
                             icon: const Icon(Icons.calendar_month_outlined),
                             onPressed: _pickDate,
                           ),
@@ -200,6 +199,7 @@ class _SampleResultCollectScreenState extends State<SampleResultCollectScreen> {
                           labelText: 'Heure de collecte',
                           border: const OutlineInputBorder(),
                           suffixIcon: IconButton(
+                            tooltip: "Sélectionner une heure",
                             icon: const Icon(Icons.access_time),
                             onPressed: _pickTime,
                           ),
@@ -223,8 +223,6 @@ class _SampleResultCollectScreenState extends State<SampleResultCollectScreen> {
               ],
             ),
           ),
-        );
-      },
     );
   }
 }

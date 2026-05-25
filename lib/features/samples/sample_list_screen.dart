@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:lstracker/data/db/lab_dao.dart';
+import 'package:lstracker/data/services/log_service.dart';
 import 'package:lstracker/features/samples/sample_analysis_fail_screen.dart';
 import 'package:lstracker/features/samples/sample_result_ready_screen.dart';
 import 'package:lstracker/utils/auth_utils.dart';
 import 'package:lstracker/utils/custom_date_utils.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
+import 'package:lstracker/widgets/skeleton.dart';
 
 import '../../data/db/sample_dao.dart';
 import '../../data/models/sample.dart';
@@ -27,6 +30,8 @@ class SampleListScreen extends StatefulWidget {
 
 class _SampleListScreenState extends State<SampleListScreen> {
   final dao = SampleDao();
+  final labDao = LabDao();
+  Map<int, String> labNames = {};
   String? status;
   List<String>? statuses;
   String type = 'Autre';
@@ -37,9 +42,25 @@ class _SampleListScreenState extends State<SampleListScreen> {
   bool loading = true;
   List<Sample> items = const [];
 
+  // Pagination
+  // Charge 50 lignes par page : compromis confortable entre vitesse de la
+  // requête SQLite et fluidité du scroll. Le ScrollController détecte
+  // l'approche du bas (200 px) pour précharger la suite.
+  static const int _pageSize = 50;
+  final ScrollController _scrollCtl = ScrollController();
+  int _offset = 0;
+  bool _hasMore = true;
+  bool _loadingMore = false;
+
   // Sélection
   bool selectMode = false;
   final Set<int> selectedIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollCtl.addListener(_onScroll);
+  }
 
   @override
   void didChangeDependencies() {
@@ -54,27 +75,107 @@ class _SampleListScreenState extends State<SampleListScreen> {
 
   @override
   void dispose() {
+    _scrollCtl.removeListener(_onScroll);
+    _scrollCtl.dispose();
     _searchCtl.dispose();
     _debounce?.cancel();
     super.dispose();
   }
 
+  void _onScroll() {
+    if (!_scrollCtl.hasClients) return;
+    final remaining =
+        _scrollCtl.position.maxScrollExtent - _scrollCtl.position.pixels;
+    if (remaining < 200 && !_loadingMore && _hasMore && !loading) {
+      _loadMore();
+    }
+  }
+
+  /// (Re)charge la première page. Remet la pagination à zéro et
+  /// nettoie la sélection des éléments qui auraient disparu.
   Future<void> _load() async {
-    setState(() => loading = true);
+    setState(() {
+      loading = true;
+      _offset = 0;
+      _hasMore = true;
+      items = const [];
+    });
+
     final data = await dao.listByTypeAndStatus(
       type: type,
       status: status!,
       statuses: statuses,
       query: _searchCtl.text.trim().isEmpty ? null : _searchCtl.text.trim(),
+      limit: _pageSize,
+      offset: 0,
     );
+
+    final ids = data
+        .where((s) => s.destinationLabId != null)
+        .map((s) => s.destinationLabId!)
+        .toSet();
+    final names = await labDao.namesByIds(ids);
+
     if (!mounted) return;
     setState(() {
       items = data;
+      labNames = names;
       loading = false;
+      _offset = data.length;
+      _hasMore = data.length == _pageSize;
       // si des éléments ont disparu, nettoie la sélection
       selectedIds.removeWhere((id) => items.indexWhere((s) => s.id == id) < 0);
       if (selectedIds.isEmpty) selectMode = false;
     });
+  }
+
+  /// Charge la page suivante et l'append à `items`. No-op si une autre
+  /// charge est déjà en cours ou si on a atteint la fin.
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore) return;
+    setState(() => _loadingMore = true);
+
+    try {
+      final next = await dao.listByTypeAndStatus(
+        type: type,
+        status: status!,
+        statuses: statuses,
+        query: _searchCtl.text.trim().isEmpty ? null : _searchCtl.text.trim(),
+        limit: _pageSize,
+        offset: _offset,
+      );
+
+      final newLabIds = next
+          .where((s) => s.destinationLabId != null)
+          .map((s) => s.destinationLabId!)
+          .where((id) => !labNames.containsKey(id))
+          .toSet();
+      final newLabNames = newLabIds.isEmpty
+          ? <int, String>{}
+          : await labDao.namesByIds(newLabIds);
+
+      if (!mounted) return;
+      setState(() {
+        items = [...items, ...next];
+        labNames = {...labNames, ...newLabNames};
+        _offset += next.length;
+        _hasMore = next.length == _pageSize;
+      });
+    } catch (e, st) {
+      LogService.instance.warn(
+        'UI',
+        'pagination échantillons: échec page (offset=$_offset, type=$type, status=$status)',
+        error: e,
+        stackTrace: st,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Chargement interrompu. Réessayez.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
   }
 
   void _onSearchChanged(String _) {
@@ -260,65 +361,7 @@ class _SampleListScreenState extends State<SampleListScreen> {
     if (changed == true) await _load(); // recharger la liste
   }
 
-  String _statusLabel(String s) {
-    switch (s.toUpperCase()) {
-      case 'COLLECTED':
-        return 'ÉCHANTILLONS COLLECTÉS';
-      case 'DELIVERED':
-        return 'ÉCHANTILLONS DÉPOSÉS AU LABO';
-      case 'RECEIVED':
-        return 'ÉCHANTILLONS REÇUS AU LABO';
-      case 'RESULT_READY':
-        return 'RÉSULTATS PRÊTS';
-      case 'RESULT_COLLECTED':
-        return 'RÉSULTATS RÉCUPÉRÉS';
-      case 'RESULT_DELIVERED':
-        return 'RÉSULTATS DÉPOSÉS SUR SITE';
-      case 'REJECTED':
-        return 'ÉCHANTILLONS REJETÉS';
-      default:
-        return s.toUpperCase();
-    }
-  }
-
-  PreferredSizeWidget _buildAppBar() {
-    /* if (!selectMode) {
-      final title = 'Liste échantillons $type';
-      final statusText = _statusLabel(status ?? 'STATUT INCONNU');
-      return AppBar(
-        title: Text(title),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(36),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            alignment: Alignment.centerLeft,
-           child: Row(
-              children: [
-                Icon(
-                  Icons.flag_outlined,
-                  size: 18,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    statusText,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }*/
-
+  PreferredSizeWidget _buildAppBar(String userRole) {
     final n = selectedIds.length;
     return AppBar(
       leading: IconButton(
@@ -328,59 +371,61 @@ class _SampleListScreenState extends State<SampleListScreen> {
       ),
       title: Text('$n sélectionné${n > 1 ? 's' : ''}'),
       actions: [
-        if (_isCollected) ...[
-          IconButton(
-            tooltip: 'Déposer au labo',
-            onPressed: _canDepositMany ? _actionDepositMany : null,
-            icon: const Icon(Icons.biotech_outlined),
-          ),
-          IconButton(
-            tooltip: 'Modifier',
-            onPressed: _canEditOne ? _actionEditOne : null,
-            icon: const Icon(Icons.edit_outlined),
-          ),
-          IconButton(
-            tooltip: 'Supprimer',
-            onPressed: _canDeleteOne ? _actionDeleteOne : null,
-            icon: const Icon(Icons.delete_outline),
-          ),
-        ] else if (_isAccepted) ...[
-          IconButton(
-            tooltip: 'Résultat prêt',
-            onPressed: _canEditOne ? _actionResultReadyOne : null,
-            icon: const Icon(Icons.assignment_turned_in_outlined),
-          ),
-          IconButton(
-            tooltip: 'Analyses échouées',
-            onPressed: selectedIds.isNotEmpty
-                ? _actionAnalysisFailedMany
-                : null,
-            icon: const Icon(Icons.report_problem_outlined),
-          ),
-        ] else if (_isDelivered) ...[
-          IconButton(
-            tooltip: 'Accepter',
-            onPressed: _canEditOne ? _actionAcceptOne : null,
-            icon: const Icon(Icons.verified_outlined),
-          ),
-          IconButton(
-            tooltip: 'Rejeter',
-            onPressed: selectedIds.isNotEmpty ? _actionRejectMany : null,
-            icon: const Icon(Icons.block_outlined),
-          ),
-          IconButton(
-            tooltip: 'Modifier le dépôt',
-            onPressed: _canEditOne ? _actionEditDepositOne : null,
-            icon: const Icon(Icons.edit_outlined),
-          ),
-        ] else if (status == SampleStatus.analysisDone) ...[
-          IconButton(
-            tooltip: 'Collecter résultats',
-            onPressed: selectedIds.isNotEmpty
-                ? _actionCollectResultsMany
-                : null,
-            icon: const Icon(Icons.assignment_turned_in_outlined),
-          ),
+        if (userRole != "USER") ...[
+          if (_isCollected) ...[
+            IconButton(
+              tooltip: 'Déposer au labo',
+              onPressed: _canDepositMany ? _actionDepositMany : null,
+              icon: const Icon(Icons.biotech_outlined),
+            ),
+            IconButton(
+              tooltip: 'Modifier',
+              onPressed: _canEditOne ? _actionEditOne : null,
+              icon: const Icon(Icons.edit_outlined),
+            ),
+            IconButton(
+              tooltip: 'Supprimer',
+              onPressed: _canDeleteOne ? _actionDeleteOne : null,
+              icon: const Icon(Icons.delete_outline),
+            ),
+          ] else if (_isAccepted) ...[
+            IconButton(
+              tooltip: 'Résultat prêt',
+              onPressed: _canEditOne ? _actionResultReadyOne : null,
+              icon: const Icon(Icons.assignment_turned_in_outlined),
+            ),
+            IconButton(
+              tooltip: 'Analyses échouées',
+              onPressed: selectedIds.isNotEmpty
+                  ? _actionAnalysisFailedMany
+                  : null,
+              icon: const Icon(Icons.report_problem_outlined),
+            ),
+          ] else if (_isDelivered) ...[
+            IconButton(
+              tooltip: 'Accepter',
+              onPressed: _canEditOne ? _actionAcceptOne : null,
+              icon: const Icon(Icons.verified_outlined),
+            ),
+            IconButton(
+              tooltip: 'Rejeter',
+              onPressed: selectedIds.isNotEmpty ? _actionRejectMany : null,
+              icon: const Icon(Icons.block_outlined),
+            ),
+            IconButton(
+              tooltip: 'Modifier le dépôt',
+              onPressed: _canEditOne ? _actionEditDepositOne : null,
+              icon: const Icon(Icons.edit_outlined),
+            ),
+          ] else if (status == SampleStatus.analysisDone) ...[
+            IconButton(
+              tooltip: 'Collecter résultats',
+              onPressed: selectedIds.isNotEmpty
+                  ? _actionCollectResultsMany
+                  : null,
+              icon: const Icon(Icons.assignment_turned_in_outlined),
+            ),
+          ],
         ],
       ],
     );
@@ -389,14 +434,22 @@ class _SampleListScreenState extends State<SampleListScreen> {
   Widget _tileFor(Sample s) {
     final title = s.sampleIdentifier?.isNotEmpty == true
         ? s.sampleIdentifier!
-        : (s.uuid ?? '—');
+        : (s.uuid);
 
     final subtitleParts = <String>[];
+
+    if (s.destinationLabId != null) {
+      final id = s.destinationLabId!;
+      final name = labNames[id];
+      subtitleParts.add('Labo de destination : ${name ?? '#$id'}');
+    }
     if (s.patientIdentifier?.isNotEmpty == true) {
       subtitleParts.add('Patient: ${s.patientIdentifier}');
     }
     if (s.collectionDate?.isNotEmpty == true) {
-      subtitleParts.add('Prélèvement: ${CustomDateUtils.toHumanReadable(s.collectionDate)}');
+      subtitleParts.add(
+        'Prélèvement: ${CustomDateUtils.toHumanReadable(s.collectionDate)}',
+      );
     }
     if (s.sampleNature?.isNotEmpty == true) {
       subtitleParts.add('Nature: ${s.sampleNature}');
@@ -471,12 +524,10 @@ class _SampleListScreenState extends State<SampleListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
-          appBar: _buildAppBar(),
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
+          appBar: _buildAppBar(userRole),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.collect,
             userRole: userRole,
@@ -505,15 +556,34 @@ class _SampleListScreenState extends State<SampleListScreen> {
                 child: RefreshIndicator(
                   onRefresh: _load,
                   child: loading
-                      ? const Center(child: CircularProgressIndicator())
+                      ? const SampleListSkeleton()
                       : items.isEmpty
                       ? const Center(child: Text('Aucun échantillon trouvé.'))
                       : ListView.separated(
+                          controller: _scrollCtl,
                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                          itemCount: items.length,
-                          separatorBuilder: (_, __) =>
+                          // Si on n'a pas encore vu la dernière page, on
+                          // ajoute une ligne "loader" à la fin pour servir
+                          // d'ancre visuelle au pré-chargement.
+                          itemCount: items.length + (_hasMore ? 1 : 0),
+                          separatorBuilder: (_, _) =>
                               const SizedBox(height: 6),
-                          itemBuilder: (_, i) => _tileFor(items[i]),
+                          itemBuilder: (_, i) {
+                            if (i >= items.length) {
+                              return const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 16),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  ),
+                                ),
+                              );
+                            }
+                            return _tileFor(items[i]);
+                          },
                         ),
                 ),
               ),
@@ -538,8 +608,6 @@ class _SampleListScreenState extends State<SampleListScreen> {
                   ),
                   label: Text(selectMode ? 'Annuler' : 'Sélectionner'),
                 ),
-        );
-      },
     );
   }
 }

@@ -198,11 +198,9 @@ class _SampleDepositEditScreenState extends State<SampleDepositEditScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: const Text('Modifier le dépôt')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.accept,
@@ -249,6 +247,7 @@ class _SampleDepositEditScreenState extends State<SampleDepositEditScreen> {
                                 labelText: 'Date de dépôt',
                                 border: const OutlineInputBorder(),
                                 suffixIcon: IconButton(
+                                  tooltip: 'Sélectionner une date',
                                   icon: const Icon(
                                     Icons.calendar_month_outlined,
                                   ),
@@ -266,6 +265,7 @@ class _SampleDepositEditScreenState extends State<SampleDepositEditScreen> {
                                 labelText: 'Heure de dépôt',
                                 border: const OutlineInputBorder(),
                                 suffixIcon: IconButton(
+                                  tooltip: "Sélectionner une heure",
                                   icon: const Icon(Icons.access_time),
                                   onPressed: _pickTime,
                                 ),
@@ -302,8 +302,6 @@ class _SampleDepositEditScreenState extends State<SampleDepositEditScreen> {
                     ],
                   ),
                 ),
-        );
-      },
     );
   }
 }

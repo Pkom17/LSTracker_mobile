@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:lstracker/data/services/log_service.dart';
 import 'package:lstracker/utils/auth_utils.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
+import 'package:lstracker/widgets/skeleton.dart';
 
 import '../../data/db/sample_dao.dart';
 import '../../data/models/sample.dart';
@@ -31,10 +33,34 @@ class _ResultsCollectedListScreenState
   List<Sample> _items = const [];
   final Set<int> _selected = {};
 
+  // Pagination (cf. SampleListScreen).
+  static const int _pageSize = 50;
+  final ScrollController _scrollCtl = ScrollController();
+  int _offset = 0;
+  bool _hasMore = true;
+  bool _loadingMore = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollCtl.addListener(_onScroll);
+  }
+
   @override
   void dispose() {
+    _scrollCtl.removeListener(_onScroll);
+    _scrollCtl.dispose();
     _searchCtl.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollCtl.hasClients) return;
+    final remaining =
+        _scrollCtl.position.maxScrollExtent - _scrollCtl.position.pixels;
+    if (remaining < 200 && !_loadingMore && _hasMore && !_loading) {
+      _loadMore();
+    }
   }
 
   @override
@@ -55,24 +81,64 @@ class _ResultsCollectedListScreenState
     setState(() {
       _loading = true;
       _error = null;
+      _offset = 0;
+      _hasMore = true;
+      _items = const [];
     });
     try {
       final items = await dao.listCollectedBySite(
         siteId: _siteId,
         siteName: _siteName,
         query: _searchCtl.text.trim().isEmpty ? null : _searchCtl.text.trim(),
-        limit: 500,
+        limit: _pageSize,
+        offset: 0,
       );
       if (!mounted) return;
       setState(() {
         _items = items;
         _selected.clear();
+        _offset = items.length;
+        _hasMore = items.length == _pageSize;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Erreur: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final next = await dao.listCollectedBySite(
+        siteId: _siteId,
+        siteName: _siteName,
+        query: _searchCtl.text.trim().isEmpty ? null : _searchCtl.text.trim(),
+        limit: _pageSize,
+        offset: _offset,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...next];
+        _offset += next.length;
+        _hasMore = next.length == _pageSize;
+      });
+    } catch (e, st) {
+      LogService.instance.warn(
+        'UI',
+        'pagination résultats récupérés: échec page (offset=$_offset, site=$_siteId)',
+        error: e,
+        stackTrace: st,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Chargement interrompu. Réessayez.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
     }
   }
 
@@ -108,11 +174,9 @@ class _ResultsCollectedListScreenState
   @override
   Widget build(BuildContext context) {
     final canDeposit = _selected.isNotEmpty;
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(
             title: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -122,7 +186,7 @@ class _ResultsCollectedListScreenState
               ],
             ),
             actions: [
-              if (_items.isNotEmpty)
+              if (_items.isNotEmpty && userRole != "USER")
                 TextButton.icon(
                   onPressed: () => _openDeposit(
                     ids: _items
@@ -141,7 +205,7 @@ class _ResultsCollectedListScreenState
                 ),
             ],
           ),
-          floatingActionButton: canDeposit
+          floatingActionButton: canDeposit && userRole != "USER"
               ? FloatingActionButton.extended(
                   icon: const Icon(Icons.assignment_turned_in_outlined),
                   label: const Text('Déposer sélection'),
@@ -154,7 +218,7 @@ class _ResultsCollectedListScreenState
           ),
 
           body: _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? const SampleListSkeleton()
               : _error != null
               ? Center(child: Text(_error!))
               : _items.isEmpty
@@ -183,10 +247,23 @@ class _ResultsCollectedListScreenState
               : RefreshIndicator(
                   onRefresh: _load,
                   child: ListView.separated(
+                    controller: _scrollCtl,
                     padding: const EdgeInsets.all(12),
-                    itemCount: _items.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemCount: _items.length + (_hasMore ? 1 : 0),
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (_, i) {
+                      if (i >= _items.length) {
+                        return const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Center(
+                            child: SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        );
+                      }
                       final s = _items[i];
                       final id = s.id!;
                       final subtitle = [
@@ -211,7 +288,7 @@ class _ResultsCollectedListScreenState
                           title: Text(
                             s.sampleIdentifier?.isNotEmpty == true
                                 ? s.sampleIdentifier!
-                                : (s.uuid ?? '—'),
+                                : s.uuid,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -221,8 +298,6 @@ class _ResultsCollectedListScreenState
                     },
                   ),
                 ),
-        );
-      },
     );
   }
 }

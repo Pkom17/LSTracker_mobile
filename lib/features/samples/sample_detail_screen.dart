@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/utils/auth_utils.dart';
 import 'package:lstracker/utils/custom_date_utils.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
@@ -8,7 +7,6 @@ import '../../data/db/app_database.dart';
 import '../../data/db/sample_dao.dart';
 import '../../data/models/sample.dart';
 import 'sample_deposit_screen.dart';
-import 'sample_edit_screen.dart';
 
 class SampleDetailScreen extends StatefulWidget {
   static const route = '/samples/detail';
@@ -115,65 +113,6 @@ class _SampleDetailScreenState extends State<SampleDetailScreen> {
     return includeIdFallback ? 'Rejection #$id' : null;
   }
 
-  Future<void> _edit() async {
-    if (_sample?.id == null) return;
-    final changed = await Navigator.of(
-      context,
-    ).pushNamed(SampleEditScreen.route, arguments: {'id': _sample!.id});
-    if (changed == true) {
-      await _load(_sample!.id!);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Fiche mise à jour.')));
-    }
-  }
-
-  Future<void> _delete() async {
-    if (_sample?.id == null) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Supprimer'),
-        content: Text(
-          'Supprimer cet échantillon ?\n${_sample!.sampleIdentifier ?? _sample!.uuid ?? ''}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Supprimer'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    try {
-      final n = await dao.deleteById(_sample!.id!);
-      if (!mounted) return;
-      if (n == 1) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Échantillon supprimé.')));
-        // Push en arrière-plan (fire-and-forget)
-        AutoSyncManager.instance.pushNow();
-        Navigator.of(context).pop(true);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Aucune ligne supprimée.')),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
-    }
-  }
-
   Widget _syncIcon() {
     final isDirty = (_sample?.dirty ?? 0) == 1;
     return Tooltip(
@@ -201,27 +140,13 @@ class _SampleDetailScreenState extends State<SampleDetailScreen> {
     final isCollected =
         (_sample?.sampleStatus ?? '').toUpperCase() == 'ON_TRANSIT';
 
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(
             title: Text(title),
-            /*     actions: [
-          IconButton(
-            tooltip: 'Modifier',
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: _sample == null ? null : _edit,
           ),
-          IconButton(
-            tooltip: 'Supprimer',
-            icon: const Icon(Icons.delete_outline),
-            onPressed: _sample == null ? null : _delete,
-          ),
-        ],*/
-          ),
-          floatingActionButton: isCollected && _sample?.id != null
+          floatingActionButton: isCollected && _sample?.id != null && userRole != 'USER'
               ? FloatingActionButton.extended(
                   icon: const Icon(Icons.biotech_outlined),
                   label: const Text('Déposer au labo'),
@@ -281,7 +206,7 @@ class _SampleDetailScreenState extends State<SampleDetailScreen> {
                                                         ?.isNotEmpty ==
                                                     true
                                                 ? _sample!.sampleIdentifier!
-                                                : (_sample!.uuid ?? '—'),
+                                                : (_sample!.uuid),
                                             style: Theme.of(
                                               context,
                                             ).textTheme.titleLarge,
@@ -520,8 +445,6 @@ class _SampleDetailScreenState extends State<SampleDetailScreen> {
                           ],
                         ),
                       )),
-        );
-      },
     );
   }
 }

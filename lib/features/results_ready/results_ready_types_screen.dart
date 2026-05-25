@@ -67,11 +67,9 @@ class _ResultsReadyTypesScreenState extends State<ResultsReadyTypesScreen> {
   @override
   Widget build(BuildContext context) {
     final title = 'Types — $_labName';
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: Text(title)),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.accept,
@@ -126,8 +124,6 @@ class _ResultsReadyTypesScreenState extends State<ResultsReadyTypesScreen> {
                     },
                   ),
                 ),
-        );
-      },
     );
   }
 }

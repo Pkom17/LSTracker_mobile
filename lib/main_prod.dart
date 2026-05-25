@@ -2,9 +2,11 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:lstracker/app_config/app_config.dart';
 import 'package:lstracker/data/services/auto_sync_manager.dart';
+import 'package:lstracker/data/services/connectivity_service.dart';
 import 'package:lstracker/data/services/dio_client.dart';
 import 'package:lstracker/features/dashboard/dashboard_screen.dart';
 import 'package:lstracker/features/results_deposit/results_collected_list_screen.dart';
@@ -26,7 +28,10 @@ import 'package:lstracker/features/samples/sample_reject_screen.dart';
 import 'package:lstracker/features/samples/sample_result_collect_screen.dart';
 import 'package:lstracker/features/samples/sample_result_ready_screen.dart';
 import 'package:lstracker/features/samples/sample_types_screen.dart';
+import 'package:lstracker/features/sync/conflict_resolution_screen.dart';
 import 'package:lstracker/features/sync/sync_screen.dart';
+import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/widgets/offline_banner.dart';
 
 import 'data/db/app_database.dart';
 import 'data/db/metadata_dao.dart';
@@ -54,7 +59,9 @@ Future<({bool isLoggedIn, String? role})> bootstrap(AuthStore authStore) async {
       try {
         const storage = FlutterSecureStorage();
         await storage.deleteAll();
-      } catch (_) {}
+      } catch (_) {
+        // Volontaire : si la purge échoue, on n'a plus de recours.
+      }
       return (isLoggedIn: false, role: null);
     }
 
@@ -66,6 +73,17 @@ Future<({bool isLoggedIn, String? role})> bootstrap(AuthStore authStore) async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+      systemStatusBarContrastEnforced: false,
+      systemNavigationBarContrastEnforced: false,
+    ),
+  );
+
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.dumpErrorToConsole(details);
   };
@@ -76,12 +94,18 @@ Future<void> main() async {
 
   await AppDatabase.instance.database;
   await ensureMetadataSchema();
+  await ConnectivityService.instance.start();
 
   // Basculer l’API sur l’environnement PROD
   AppConfig.overrideBase('https://lstracker.org');
 
   final authStore = AuthStore();
   final boot = await bootstrap(authStore);
+
+  // Cf. main.dart : précharge le cache AuthUtils pour les écrans.
+  if (boot.isLoggedIn) {
+    await AuthUtils.prime();
+  }
 
   runApp(
     MyApp(
@@ -115,19 +139,28 @@ class MyApp extends StatelessWidget {
     }
     return MaterialApp(
       title: 'Lab Sample Tracker',
+      builder: (context, child) =>
+          OfflineBannerOverlay(child: child ?? const SizedBox.shrink()),
       theme:
           ThemeData(
             colorScheme: ColorScheme.fromSeed(
-              seedColor: const Color.fromARGB(255, 35, 2, 146),
+              seedColor: const Color(0xFF230292),
               brightness: Brightness.light,
             ),
             useMaterial3: true,
           ).copyWith(
             appBarTheme: AppBarTheme(
-              backgroundColor: Theme.of(context).colorScheme.primary,
-              foregroundColor: Theme.of(context).colorScheme.onPrimary,
-              elevation: 4.0,
+              elevation: 0,
+              surfaceTintColor: Colors.transparent,
+              backgroundColor: Colors.transparent,
+              foregroundColor: Colors.black,
+              systemOverlayStyle: SystemUiOverlayStyle(
+                statusBarColor: Colors.transparent,
+                statusBarIconBrightness: Brightness.dark,
+                statusBarBrightness: Brightness.light,
+              ),
             ),
+            scaffoldBackgroundColor: Colors.white,
           ),
       home: isLoggedIn
           ? DashboardScreen(userRole: userRole!)
@@ -148,6 +181,7 @@ class MyApp extends StatelessWidget {
           return LoginScreen(authService: authService);
         },
         '/sync': (ctx) => const SyncScreen(),
+        ConflictResolutionScreen.route: (_) => const ConflictResolutionScreen(),
         CollectSampleScreen.route: (_) => CollectSampleScreen(),
         CollectContextScreen.route: (_) => const CollectContextScreen(),
         SampleTypesScreen.route: (_) => const SampleTypesScreen(),

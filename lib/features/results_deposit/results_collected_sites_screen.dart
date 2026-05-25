@@ -99,11 +99,9 @@ class _ResultsCollectedSitesScreenState
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: const Text('Résultats récupérés — par site')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.collect,
@@ -162,8 +160,6 @@ class _ResultsCollectedSitesScreenState
                     },
                   ),
                 ),
-        );
-      },
     );
   }
 }

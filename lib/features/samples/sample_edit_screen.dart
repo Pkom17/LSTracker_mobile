@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/utils/custom_date_utils.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
 
 import '../../data/db/app_database.dart';
@@ -55,6 +57,20 @@ class _SampleEditScreenState extends State<SampleEditScreen> {
     _collectionDateCtl.dispose();
     _pickupDateCtl.dispose();
     super.dispose();
+  }
+
+  /// Picker borné à [année-1, aujourd'hui] pour éviter les saisies aberrantes.
+  Future<void> _pickDate(TextEditingController ctl) async {
+    final init = DateTime.tryParse(ctl.text.trim()) ?? DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: init,
+      firstDate: CustomDateUtils.minCollectionDate,
+      lastDate: CustomDateUtils.maxCollectionDate,
+    );
+    if (picked != null) {
+      ctl.text = DateFormat('yyyy-MM-dd').format(picked);
+    }
   }
 
   @override
@@ -228,13 +244,11 @@ class _SampleEditScreenState extends State<SampleEditScreen> {
   Widget build(BuildContext context) {
     final title = _sample == null
         ? 'Modifier'
-        : 'Modifier — ${_sample!.sampleIdentifier ?? _sample!.uuid ?? ''}';
+        : 'Modifier — ${_sample!.sampleIdentifier ?? _sample!.uuid}';
 
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: Text(title)),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.collect,
@@ -428,21 +442,39 @@ class _SampleEditScreenState extends State<SampleEditScreen> {
                       ),
                       const SizedBox(height: 12),
 
-                      // Dates (texte libre comme ta collecte)
+                      // Dates : champs en lecture seule + picker borné
+                      // [année-1, aujourd'hui] + validation centralisée pour
+                      // empêcher la saisie de dates aberrantes (ex. année 204).
                       TextFormField(
                         controller: _collectionDateCtl,
-                        decoration: const InputDecoration(
-                          labelText: 'Date de prélèvement (texte)',
-                          border: OutlineInputBorder(),
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: 'Date de prélèvement',
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            tooltip: 'Sélectionner une date',
+                            icon: const Icon(Icons.calendar_today_outlined),
+                            onPressed: () => _pickDate(_collectionDateCtl),
+                          ),
                         ),
+                        validator: (v) =>
+                            CustomDateUtils.validateCollectionDate(v, required: false),
                       ),
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: _pickupDateCtl,
-                        decoration: const InputDecoration(
-                          labelText: 'Date de collecte (texte)',
-                          border: OutlineInputBorder(),
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: 'Date de collecte',
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            tooltip: 'Sélectionner une date',
+                            icon: const Icon(Icons.calendar_today_outlined),
+                            onPressed: () => _pickDate(_pickupDateCtl),
+                          ),
                         ),
+                        validator: (v) =>
+                            CustomDateUtils.validateCollectionDate(v, required: false),
                       ),
                       const SizedBox(height: 12),
 
@@ -492,8 +524,6 @@ class _SampleEditScreenState extends State<SampleEditScreen> {
                     ],
                   ),
                 ),
-        );
-      },
     );
   }
 }

@@ -160,28 +160,22 @@ class _CollectContextScreenState extends State<CollectContextScreen> {
   @override
   Widget build(BuildContext context) {
     if (_fetching) {
-      return FutureBuilder<String?>(
-        future: AuthUtils.getUserRole(),
-        builder: (context, snapshot) {
-          final userRole = snapshot.data ?? 'ADMIN';
-          return Scaffold(
-            appBar: AppBar(title: const Text('Définir le site & kilométrage')),
-            bottomNavigationBar: GlobalBottomNav(
-              current: BottomTab.collect,
-              userRole: userRole,
-            ),
-            body: const Center(child: CircularProgressIndicator()),
-          );
-        },
+      // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+      final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+      return Scaffold(
+        appBar: AppBar(title: const Text('Définir le site & kilométrage')),
+        bottomNavigationBar: GlobalBottomNav(
+          current: BottomTab.collect,
+          userRole: userRole,
+        ),
+        body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     final hasMeta = _circuits.isNotEmpty && _allSites.isNotEmpty;
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: const Text('Définir le site & kilométrage')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.collect,
@@ -357,8 +351,6 @@ class _CollectContextScreenState extends State<CollectContextScreen> {
               ),
             ],
           ),
-        );
-      },
     );
   }
 }

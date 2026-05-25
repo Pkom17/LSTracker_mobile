@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:lstracker/data/services/meta_sync_service.dart';
 import 'package:lstracker/features/common/account_menu_button.dart';
+import 'package:lstracker/features/dashboard/_dashboard_sections.dart';
 import 'package:lstracker/features/samples/sample_types_screen.dart';
 import 'package:lstracker/utils/auth_utils.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
+import 'package:lstracker/widgets/status_card.dart';
+import 'package:lstracker/widgets/sync_queue_action.dart';
 
 import '../../data/db/sample_dao.dart';
 import '../../data/models/sample.dart';
-import '../../widgets/counter_card.dart';
 
 class DashboardLabScreen extends StatefulWidget {
   const DashboardLabScreen({super.key});
@@ -19,12 +20,7 @@ class DashboardLabScreen extends StatefulWidget {
 class _DashboardLabScreenState extends State<DashboardLabScreen> {
   final dao = SampleDao();
   Map<String, int>? counters;
-  List<Map<String, Object?>> toReceiveBadges = const [];
-  List<Map<String, Object?>> receivedBadges = const [];
-  List<Map<String, Object?>> rejectedBadges = const [];
-  List<Map<String, Object?>> resultReadyBadges = const [];
   bool loading = true;
-  bool syncing = false;
 
   @override
   void initState() {
@@ -42,48 +38,54 @@ class _DashboardLabScreenState extends State<DashboardLabScreen> {
     });
   }
 
-  Future<void> _syncMeta() async {
-    if (syncing) return;
-    setState(() => syncing = true);
-    try {
-      await MetaSyncService.refreshAll();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Métadonnées synchronisées')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Échec de la synchronisation: $e')),
-      );
-    } finally {
-      if (mounted) setState(() => syncing = false);
-    }
+  void _openStatusList(String status, String title) {
+    Navigator.of(context)
+        .pushNamed(
+          SampleTypesScreen.route,
+          arguments: {'status': status, 'title': title},
+        )
+        .then((_) => _load());
+  }
+
+  void _openStatusesList(List<String> statuses, String title) {
+    Navigator.of(context)
+        .pushNamed(
+          SampleTypesScreen.route,
+          arguments: {'statuses': statuses, 'title': title},
+        )
+        .then((_) => _load());
   }
 
   @override
   Widget build(BuildContext context) {
-    final c = counters ?? {};
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    final c = counters ?? const <String, int>{};
+    final collected = c['collected'] ?? 0;
+    final delivered = c['delivered'] ?? 0;
+    final received = c['received'] ?? 0;
+    final resultReady = c['resultReady'] ?? 0;
+    final resultCollected = c['resultCollected'] ?? 0;
+    final resultDeposited = c['resultDeposited'] ?? 0;
+    final rejected = c['rejected'] ?? 0;
+    final analysisFailed = c['analysisFailed'] ?? 0;
+
+    final hasAnyData = collected +
+            delivered +
+            received +
+            resultReady +
+            resultCollected +
+            resultDeposited +
+            rejected +
+            analysisFailed >
+        0;
+
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(
             title: const Text('Tableau de bord — Biologiste'),
             actions: [
+              const SyncQueueAction(),
               AccountMenuButton(),
-              /*       IconButton(
-            tooltip: 'Recharger les métadonnées',
-            onPressed: syncing ? null : _syncMeta,
-            icon: syncing
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.cloud_sync_outlined),
-          ),*/
             ],
           ),
           bottomNavigationBar: GlobalBottomNav(
@@ -93,132 +95,137 @@ class _DashboardLabScreenState extends State<DashboardLabScreen> {
           body: RefreshIndicator(
             onRefresh: _load,
             child: ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
               children: [
-                GridView.count(
-                  crossAxisCount: MediaQuery.of(context).size.width > 900
-                      ? 4
-                      : (MediaQuery.of(context).size.width > 600 ? 3 : 2),
-                  shrinkWrap: true,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                  physics: const NeverScrollableScrollPhysics(),
-                  children: [
-                    CounterCard(
-                      actionTitle: '',
-                      label: 'Collectés',
-                      count: c['collected'] ?? 0,
-                      icon: Icons.inventory_2_outlined,
-                      /*onTap: () {
-                    Navigator.of(context)
-                        .pushNamed(
-                          SampleTypesScreen.route,
-                          arguments: {
-                            'status': SampleStatus.collected,
-                            'title': 'Echantillons collectés',
-                          },
-                        )
-                        .then((_) => _load());
-                  },*/
-                    ),
-                    CounterCard(
-                      actionTitle: 'Recevoir des échantillons',
-                      label: 'Déposés (labo)',
-                      count: c['delivered'] ?? 0,
+                const DashboardInfoNote(),
+                // ===== À FAIRE =====
+                SectionHeader(
+                  title: 'À faire',
+                  badge: delivered + received,
+                ),
+                const SizedBox(height: 10),
+                CardsGrid(
+                  cards: [
+                    StatusCard(
+                      label: 'À recevoir',
+                      count: delivered,
                       icon: Icons.biotech_outlined,
-                      onTap: () {
-                        Navigator.of(context)
-                            .pushNamed(
-                              SampleTypesScreen.route,
-                              arguments: {
-                                'statuses': [
-                                  SampleStatus.receivedAtDistrictLab,
-                                  SampleStatus.receivedAtHub,
-                                  SampleStatus.receivedAtReferenceLab,
-                                  SampleStatus.receivedAtTbLab,
-                                ],
-                                'title': 'Echantillons déposés au labo',
-                              },
-                            )
-                            .then((_) => _load());
-                      },
+                      accent: const Color(0xFF0891B2),
+                      actionable: true,
+                      onTap: () => _openStatusesList(
+                        const [
+                          SampleStatus.receivedAtDistrictLab,
+                          SampleStatus.receivedAtHub,
+                          SampleStatus.receivedAtReferenceLab,
+                          SampleStatus.receivedAtTbLab,
+                        ],
+                        'Échantillons déposés au labo',
+                      ),
                     ),
-                    CounterCard(
-                      actionTitle: 'Finaliser des analyses',
-                      label: 'Reçus labo',
-                      count: c['received'] ?? 0,
+                    StatusCard(
+                      label: 'À finaliser',
+                      count: received,
                       icon: Icons.verified_outlined,
-                      onTap: () {
-                        Navigator.of(context)
-                            .pushNamed(
-                              SampleTypesScreen.route,
-                              arguments: {
-                                'statuses': [
-                                  SampleStatus.acceptedAtDistrictLab,
-                                  SampleStatus.acceptedAtHub,
-                                  SampleStatus.acceptedAtReferenceLab,
-                                  SampleStatus.acceptedAtTbLab,
-                                ],
-                                'title': 'Echantillons acceptés par le labo',
-                              },
-                            )
-                            .then((_) => _load());
-                      },
-                    ),
-                    CounterCard(
-                      actionTitle: '',
-                      label: 'Résultats prêts',
-                      count: c['resultReady'] ?? 0,
-                      icon: Icons.fact_check_outlined,
-                    ),
-                    CounterCard(
-                      actionTitle: '',
-                      label: 'Résultats récupérés',
-                      count: c['resultCollected'] ?? 0,
-                      icon: Icons.assignment_return_outlined,
-                    ),
-                    CounterCard(
-                      actionTitle: '',
-                      label: 'Résultats déposés',
-                      count: c['resultDeposited'] ?? 0,
-                      icon: Icons.assignment_turned_in_outlined,
-                    ),
-                    CounterCard(
-                      actionTitle: '',
-                      label: 'Rejetés',
-                      count: c['rejected'] ?? 0,
-                      icon: Icons.block_outlined,
-                      onTap: () {
-                        Navigator.of(context)
-                            .pushNamed(
-                              SampleTypesScreen.route,
-                              arguments: {
-                                'status': SampleStatus.nonConform,
-                                'title': 'Echantillons rejetés',
-                              },
-                            )
-                            .then((_) => _load());
-                      },
-                    ),
-                    CounterCard(
-                      actionTitle: '',
-                      label: 'Echoués',
-                      count: c['analysisFailed'] ?? 0,
-                      icon: Icons.report_problem_outlined,
-                      onTap: () {
-                        Navigator.of(context)
-                            .pushNamed(
-                              SampleTypesScreen.route,
-                              arguments: {
-                                'status': SampleStatus.analysisFailed,
-                                'title': 'Echantillons échoués',
-                              },
-                            )
-                            .then((_) => _load());
-                      },
+                      accent: const Color(0xFF16A34A),
+                      actionable: true,
+                      onTap: () => _openStatusesList(
+                        const [
+                          SampleStatus.acceptedAtDistrictLab,
+                          SampleStatus.acceptedAtHub,
+                          SampleStatus.acceptedAtReferenceLab,
+                          SampleStatus.acceptedAtTbLab,
+                        ],
+                        'Échantillons acceptés par le labo',
+                      ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 24),
+
+                // ===== SUIVI =====
+                SectionHeader(
+                  title: 'Suivi',
+                  badge: collected + resultReady + resultCollected +
+                      resultDeposited,
+                ),
+                const SizedBox(height: 10),
+                CardsGrid(
+                  cards: [
+                    StatusCard(
+                      label: 'En transit',
+                      count: collected,
+                      icon: Icons.local_shipping_outlined,
+                      accent: const Color(0xFF2563EB),
+                    ),
+                    StatusCard(
+                      label: 'Résultats prêts',
+                      count: resultReady,
+                      icon: Icons.fact_check_outlined,
+                      accent: const Color(0xFF7C3AED),
+                    ),
+                    StatusCard(
+                      label: 'Résultats récupérés',
+                      count: resultCollected,
+                      icon: Icons.assignment_return_outlined,
+                      accent: const Color(0xFFEA580C),
+                    ),
+                    StatusCard(
+                      label: 'Résultats déposés',
+                      count: resultDeposited,
+                      icon: Icons.assignment_turned_in_outlined,
+                      accent: const Color(0xFF059669),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // ===== ANOMALIES (conditionnel) =====
+                if (rejected > 0 || analysisFailed > 0) ...[
+                  SectionHeader(
+                    title: 'Anomalies',
+                    badge: rejected + analysisFailed,
+                    accent: Colors.red.shade700,
+                  ),
+                  const SizedBox(height: 10),
+                  CardsGrid(
+                    cards: [
+                      if (rejected > 0)
+                        StatusCard(
+                          label: 'Rejetés',
+                          count: rejected,
+                          icon: Icons.block_outlined,
+                          accent: Colors.red.shade600,
+                          actionable: true,
+                          onTap: () => _openStatusList(
+                            SampleStatus.nonConform,
+                            'Échantillons rejetés',
+                          ),
+                        ),
+                      if (analysisFailed > 0)
+                        StatusCard(
+                          label: 'Analyses échouées',
+                          count: analysisFailed,
+                          icon: Icons.report_problem_outlined,
+                          accent: Colors.orange.shade700,
+                          actionable: true,
+                          onTap: () => _openStatusList(
+                            SampleStatus.analysisFailed,
+                            'Analyses échouées',
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+
+                if (!loading && !hasAnyData) ...[
+                  const SizedBox(height: 16),
+                  const EmptyDashboardState(
+                    title: 'Aucune activité pour le moment',
+                    subtitle:
+                        'Les échantillons et résultats s\'afficheront ici après synchronisation.',
+                  ),
+                ],
+
                 if (loading)
                   const Padding(
                     padding: EdgeInsets.all(24.0),
@@ -227,8 +234,6 @@ class _DashboardLabScreenState extends State<DashboardLabScreen> {
               ],
             ),
           ),
-        );
-      },
     );
   }
 }

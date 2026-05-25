@@ -169,7 +169,14 @@ class TokenInterceptor extends Interceptor {
             onSendProgress: ro.onSendProgress,
           )
           .then(p.h.resolve)
-          .catchError(p.h.reject);
+          .catchError((Object e) {
+            // catchError donne un Object, mais reject attend un DioException.
+            // Si l'erreur n'est pas un DioException (rare), on la wrappe.
+            final dioErr = e is DioException
+                ? e
+                : DioException(requestOptions: ro, error: e);
+            p.h.reject(dioErr);
+          });
     }
     _queue.clear();
   }
@@ -189,7 +196,11 @@ class TokenInterceptor extends Interceptor {
     if (looksLikeBadDecrypt) {
       try {
         await auth.purgeAll();
-      } catch (_) {}
+      } catch (_) {
+        // Volontaire : si même la purge échoue, on n'a plus de recours
+        // côté process (l'utilisateur devra réinstaller). Re-throw ne
+        // ferait que masquer l'erreur de décryptage initiale.
+      }
     }
   }
 }

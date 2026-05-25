@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/widgets/form_section.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
 
 import '../../data/db/app_database.dart';
@@ -22,7 +23,7 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
 
   final dao = SampleDao();
 
-  // Bootstrap unique
+  // Sélection (IDs d’échantillons à déposer)
   Set<int> _ids = {};
   bool _bootstrapped = false;
 
@@ -34,8 +35,11 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
   int? _labId;
   DateTime _date = DateTime.now();
   TimeOfDay _time = TimeOfDay.now();
-
   String _mode = 'select'; // 'select' | 'scan'
+
+  // Règle métier kilométrage
+  double? _minRequiredKm; // = MAX(startMileage) parmi les IDs sélectionnés
+  String? _kmHint; // HelperText dynamique
 
   @override
   void dispose() {
@@ -57,7 +61,6 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
         (args?['ids'] as List?)?.cast<int>() ??
         (args?['idsSet'] as Set<int>?) ??
         const <int>{};
-
     _ids = idsArg.toSet();
 
     _updateDateTimeControllers();
@@ -78,7 +81,7 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
       // 1) Charger la liste des labos
       final labs = await db.query('lab', orderBy: 'name ASC');
 
-      // 2) Tenter de pré-sélectionner le labo de destination d’un des échantillons sélectionnés
+      // 2) Pré-sélection possible du labo de destination d’un des échantillons
       int? preferredLabId;
       if (_ids.isNotEmpty) {
         final placeholders = List.filled(_ids.length, '?').join(',');
@@ -87,7 +90,7 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
           FROM sample
           WHERE id IN ($placeholders) AND destination_lab_id IS NOT NULL
           LIMIT 1
-          ''', _ids.toList());
+        ''', _ids.toList());
         if (rs.isNotEmpty) {
           preferredLabId =
               (rs.first['labId'] as int?) ??
@@ -95,24 +98,43 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
         }
       }
 
+      double? minRequiredKm;
+      if (_ids.isNotEmpty) {
+        final placeholders = List.filled(_ids.length, '?').join(',');
+        final r2 = await db.rawQuery('''
+          SELECT MAX(start_mileage) AS maxCollKm
+          FROM sample
+          WHERE id IN ($placeholders) AND start_mileage IS NOT NULL
+        ''', _ids.toList());
+
+        if (r2.isNotEmpty && r2.first['maxCollKm'] != null) {
+          minRequiredKm =
+              (r2.first['maxCollKm'] as double?) ??
+              (r2.first['maxCollKm'] as num?)?.toDouble();
+        }
+      }
+
       if (!mounted) return;
       setState(() {
         _labs = labs;
 
-        // Si on a un preferredLabId et qu’il existe dans la liste, on l’utilise
         if (preferredLabId != null &&
             labs.any(
-              (e) =>
-                  ((e['id'] as int?) ?? (e['id'] as num?)?.toInt()) ==
-                  preferredLabId,
+              ((e) =>
+                  (((e['id'] as int?) ?? (e['id'] as num?)?.toInt()) ==
+                  preferredLabId)),
             )) {
           _labId = preferredLabId;
         } else if (_labId == null && labs.isNotEmpty) {
-          // Sinon, fallback sur le premier labo
           _labId =
               ((labs.first['id'] as int?) ??
               (labs.first['id'] as num?)?.toInt());
         }
+
+        _minRequiredKm = minRequiredKm;
+        _kmHint = _minRequiredKm != null
+            ? 'Doit être > ${_minRequiredKm} km'
+            : 'Saisissez le kilométrage (référence collecte indisponible)';
       });
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -201,7 +223,7 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Déposé au labo: $updated / ${_ids.length}')),
       );
-      // Push en arrière-plan (fire-and-forget)
+      // Push en arrière-plan
       AutoSyncManager.instance.pushNow();
       Navigator.of(context).pop(true);
     } catch (e) {
@@ -215,16 +237,26 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
   @override
   Widget build(BuildContext context) {
     final count = _ids.length;
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: Text('Dépôt au labo — $count sélection(s)')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.accept,
             userRole: userRole,
           ),
+          persistentFooterButtons: _loading
+              ? null
+              : [
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _submit,
+                      icon: const Icon(Icons.biotech_outlined),
+                      label: Text('Déposer $count échantillon(s)'),
+                    ),
+                  ),
+                ],
           body: _loading
               ? const Center(child: CircularProgressIndicator())
               : Form(
@@ -232,117 +264,167 @@ class _SampleDepositScreenState extends State<SampleDepositScreen> {
                   child: ListView(
                     padding: const EdgeInsets.all(16),
                     children: [
-                      // Mode
-                      SegmentedButton<String>(
-                        segments: const [
-                          ButtonSegment(
-                            value: 'select',
-                            label: Text('Sélectionner'),
-                          ),
-                          ButtonSegment(value: 'scan', label: Text('Scanner')),
-                        ],
-                        selected: {_mode},
-                        onSelectionChanged: (s) =>
-                            setState(() => _mode = s.first),
+                      // Bandeau récap : combien d'échantillons sont déposés
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primaryContainer
+                              .withValues(alpha: 0.4),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.inventory_2_outlined,
+                                color:
+                                    Theme.of(context).colorScheme.primary),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                '$count échantillon(s) prêt(s) à être déposé(s)',
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+
+                      // ===== Saisie / scan du labo =====
+                      FormSection(
+                        title: 'Laboratoire de destination',
+                        icon: Icons.biotech_outlined,
+                        child: Column(
+                          children: [
+                            SegmentedButton<String>(
+                              segments: const [
+                                ButtonSegment(
+                                    value: 'select',
+                                    label: Text('Sélectionner')),
+                                ButtonSegment(
+                                    value: 'scan', label: Text('Scanner')),
+                              ],
+                              selected: {_mode},
+                              onSelectionChanged: (s) =>
+                                  setState(() => _mode = s.first),
+                            ),
+                            const SizedBox(height: 12),
+                            if (_mode == 'scan')
+                              Card(
+                                margin: EdgeInsets.zero,
+                                child: ListTile(
+                                  leading:
+                                      const Icon(Icons.qr_code_scanner),
+                                  title: const Text(
+                                      'Scanner le code du labo'),
+                                  subtitle:
+                                      const Text('Bientôt disponible'),
+                                  onTap: _scanPlaceholder,
+                                ),
+                              )
+                            else
+                              DropdownButtonFormField<int>(
+                                initialValue: _labId,
+                                isExpanded: true,
+                                items: _labItems(),
+                                decoration: const InputDecoration(
+                                  labelText:
+                                      'Laboratoire de livraison *',
+                                  border: OutlineInputBorder(),
+                                ),
+                                onChanged: (v) =>
+                                    setState(() => _labId = v),
+                                validator: (v) => v == null
+                                    ? 'Choisissez un laboratoire'
+                                    : null,
+                              ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 12),
 
-                      if (_mode == 'scan') ...[
-                        Card(
-                          child: ListTile(
-                            leading: const Icon(Icons.qr_code_scanner),
-                            title: const Text('Scanner le code du labo'),
-                            subtitle: const Text('Bientôt disponible'),
-                            onTap: _scanPlaceholder,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-
-                      // Labo
-                      DropdownButtonFormField<int>(
-                        value: _labId,
-                        isExpanded: true,
-                        items: _labItems(),
-                        decoration: const InputDecoration(
-                          labelText: 'Laboratoire de livraison',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (v) => setState(() => _labId = v),
-                        validator: (v) =>
-                            v == null ? 'Choisissez un laboratoire' : null,
-                      ),
-                      const SizedBox(height: 12),
-
-                      // Date / Heure
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _dateCtl,
-                              readOnly: true,
-                              decoration: InputDecoration(
-                                labelText: 'Date de dépôt',
-                                border: const OutlineInputBorder(),
-                                suffixIcon: IconButton(
-                                  icon: const Icon(
-                                    Icons.calendar_month_outlined,
+                      // ===== Date / heure =====
+                      FormSection(
+                        title: 'Date et heure de dépôt',
+                        icon: Icons.event_outlined,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextFormField(
+                                controller: _dateCtl,
+                                readOnly: true,
+                                decoration: InputDecoration(
+                                  labelText: 'Date *',
+                                  border: const OutlineInputBorder(),
+                                  suffixIcon: IconButton(
+                                    tooltip: 'Sélectionner une date',
+                                    icon: const Icon(
+                                        Icons.calendar_month_outlined),
+                                    onPressed: _pickDate,
                                   ),
-                                  onPressed: _pickDate,
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _timeCtl,
-                              readOnly: true,
-                              decoration: InputDecoration(
-                                labelText: 'Heure de dépôt',
-                                border: const OutlineInputBorder(),
-                                suffixIcon: IconButton(
-                                  icon: const Icon(Icons.access_time),
-                                  onPressed: _pickTime,
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _timeCtl,
+                                readOnly: true,
+                                decoration: InputDecoration(
+                                  labelText: 'Heure *',
+                                  border: const OutlineInputBorder(),
+                                  suffixIcon: IconButton(
+                                    tooltip: "Sélectionner une heure",
+                                    icon: const Icon(Icons.access_time),
+                                    onPressed: _pickTime,
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 12),
 
-                      // Km fin
-                      TextFormField(
-                        controller: _kmCtl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Kilométrage d’arrivée (fin collecte)',
-                          border: OutlineInputBorder(),
+                      // ===== Kilométrage =====
+                      FormSection(
+                        title: 'Kilométrage',
+                        icon: Icons.speed,
+                        subtitle:
+                            'Kilométrage du véhicule à l\'arrivée au labo',
+                        child: TextFormField(
+                          controller: _kmCtl,
+                          keyboardType:
+                              const TextInputType.numberWithOptions(
+                            signed: false,
+                            decimal: false,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Kilométrage d\'arrivée *',
+                            border: const OutlineInputBorder(),
+                            helperText: _kmHint,
+                          ),
+                          validator: (v) {
+                            if (v == null || v.trim().isEmpty) {
+                              return 'Saisissez le kilométrage';
+                            }
+                            final parsed = int.tryParse(v.trim());
+                            if (parsed == null || parsed < 0) {
+                              return 'Kilométrage invalide';
+                            }
+                            if (_minRequiredKm != null &&
+                                parsed <= _minRequiredKm!) {
+                              return 'Doit être strictement > $_minRequiredKm';
+                            }
+                            return null;
+                          },
                         ),
-                        validator: (v) {
-                          if (v == null || v.trim().isEmpty)
-                            return 'Saisissez le kilométrage';
-                          if (int.tryParse(v.trim()) == null)
-                            return 'Kilométrage invalide';
-                          return null;
-                        },
                       ),
-
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: _submit,
-                          icon: const Icon(Icons.biotech_outlined),
-                          label: const Text('Déposer'),
-                        ),
-                      ),
+                      const SizedBox(height: 8),
                     ],
                   ),
                 ),
-        );
-      },
     );
   }
 }

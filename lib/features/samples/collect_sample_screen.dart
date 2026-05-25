@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/utils/custom_date_utils.dart';
+import 'package:lstracker/widgets/form_section.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
 import 'package:uuid/uuid.dart';
 
@@ -42,6 +44,14 @@ class _CollectSampleScreenState extends State<CollectSampleScreen> {
   // UI
   bool _saving = false;
   bool _keepSiteAndMileage = true;
+
+  // État de chargement des métadonnées. On distingue explicitement
+  // "en cours" / "chargé" pour ne PAS utiliser `_labs.isEmpty` comme
+  // signal de loading : si la base ne contient aucun labo (scope vide,
+  // métadonnées pas encore synchronisées, etc.), l'utilisateur restait
+  // bloqué indéfiniment sur le spinner.
+  bool _labsLoading = true;
+  String? _labsError;
 
   final _dao = SampleDao();
 
@@ -88,10 +98,27 @@ class _CollectSampleScreenState extends State<CollectSampleScreen> {
   }
 
   Future<void> _loadLabs() async {
-    final db = await AppDatabase.instance.database;
-    final labs = await db.query('lab', orderBy: 'name ASC');
-    if (!mounted) return;
-    setState(() => _labs = labs);
+    if (mounted) {
+      setState(() {
+        _labsLoading = true;
+        _labsError = null;
+      });
+    }
+    try {
+      final db = await AppDatabase.instance.database;
+      final labs = await db.query('lab', orderBy: 'name ASC');
+      if (!mounted) return;
+      setState(() {
+        _labs = labs;
+        _labsLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _labsError = 'Échec de chargement des laboratoires: $e';
+        _labsLoading = false;
+      });
+    }
   }
 
   /// Pré-remplit la date/heure de prélèvement (aujourd’hui), et pickupDate à maintenant.
@@ -115,14 +142,16 @@ class _CollectSampleScreenState extends State<CollectSampleScreen> {
     super.dispose();
   }
 
-  // Utilitaires de choix date/heure
+  // Utilitaires de choix date/heure.
+  // Bornes : [année courante - 1, aujourd'hui] — cohérent avec
+  // CustomDateUtils.validateCollectionDate côté validator.
   Future<void> _pickDate(TextEditingController ctl) async {
     final init = DateTime.tryParse(ctl.text) ?? DateTime.now();
     final picked = await showDatePicker(
       context: context,
       initialDate: init,
-      firstDate: DateTime(2020, 1, 1),
-      lastDate: DateTime(2100, 1, 1),
+      firstDate: CustomDateUtils.minCollectionDate,
+      lastDate: CustomDateUtils.maxCollectionDate,
     );
     if (picked != null) {
       ctl.text = DateFormat('yyyy-MM-dd').format(picked);
@@ -258,6 +287,64 @@ class _CollectSampleScreenState extends State<CollectSampleScreen> {
     return uuid.v4();
   }
 
+  Widget _buildErrorState(String message) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 56, color: Colors.redAccent),
+            const SizedBox(height: 12),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.black87),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _loadLabs,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Réessayer'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNoLabsState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.science_outlined, size: 64, color: Colors.grey),
+            const SizedBox(height: 12),
+            const Text(
+              'Aucun laboratoire disponible.',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              "Synchronisez les métadonnées (onglet Sync → \"Recharger métadonnées\") puis revenez ici.",
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _loadLabs,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Réessayer'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   List<DropdownMenuItem<int>> _labItems() => _labs
       .map(
         (e) => DropdownMenuItem<int>(
@@ -269,291 +356,351 @@ class _CollectSampleScreenState extends State<CollectSampleScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pad = EdgeInsets.symmetric(vertical: 8);
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: const Text('Collecter un échantillon')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.collect,
             userRole: userRole,
           ),
-          body: _labs.isEmpty
+          // Sticky save bar : pour un convoyeur qui saisit 20-30 collectes
+          // par jour, le bouton "Valider" doit être à portée de pouce sans
+          // scroller jusqu'en bas du formulaire.
+          persistentFooterButtons: _labs.isEmpty || _labsLoading
+              ? null
+              : [
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _saving ? null : _submit,
+                      icon: _saving
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.check),
+                      label: Text(_saving ? 'Enregistrement...' : 'Valider'),
+                    ),
+                  ),
+                ],
+          body: _labsLoading
               ? const Center(child: CircularProgressIndicator())
-              : Form(
-                  key: _formKey,
-                  child: ListView(
-                    padding: const EdgeInsets.all(16),
-                    children: [
-                      // Circuit
-                      Card(
-                        child: ListTile(
-                          leading: const Icon(Icons.place_outlined),
-                          title: Text(
-                            _siteName.isEmpty ? 'Site #$_siteId' : _siteName,
-                          ),
-                          subtitle: Text(
-                            'Circuit : ${_circuitName.isEmpty ? '#$_circuitId' : _circuitName}',
-                          ),
-                          trailing: SizedBox(
-                            width: 120,
-                            child: TextFormField(
-                              controller: _mileageCtl,
-                              enabled: false, // fixé
-                              decoration: const InputDecoration(
-                                labelText: 'Km',
-                                border: OutlineInputBorder(),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      // Type d’échantillon
-                      Padding(
-                        padding: pad,
-                        child: DropdownButtonFormField<String>(
-                          value: _sampleType,
-                          items: const [
-                            DropdownMenuItem(value: 'BI', child: Text('BI')),
-                            DropdownMenuItem(value: 'BS', child: Text('BS')),
-                            DropdownMenuItem(value: 'CV', child: Text('CV')),
-                            DropdownMenuItem(value: 'EID', child: Text('EID')),
-                            DropdownMenuItem(
-                              value: 'PrEP',
-                              child: Text('PrEP'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'IVSA',
-                              child: Text('IVSA'),
-                            ),
-                            DropdownMenuItem(value: 'TB', child: Text('TB')),
-                            DropdownMenuItem(value: 'HPV', child: Text('HPV')),
-                            DropdownMenuItem(
-                              value: 'Autre',
-                              child: Text('Autre'),
-                            ),
-                          ],
-                          decoration: const InputDecoration(
-                            labelText: 'Nature du bilan démandé',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => setState(() => _sampleType = v),
-                          validator: (v) =>
-                              v == null ? 'Sélectionnez un type' : null,
-                        ),
-                      ),
+              : _labsError != null
+                  ? _buildErrorState(_labsError!)
+                  : _labs.isEmpty
+                      ? _buildNoLabsState()
+                      : _buildForm(),
+    );
+  }
 
-                      // Nature du prélèvement
-                      Padding(
-                        padding: pad,
-                        child: DropdownButtonFormField<String>(
-                          value: _sampleNature,
-                          items: const [
-                            DropdownMenuItem(value: 'DBS', child: Text('DBS')),
-                            DropdownMenuItem(
-                              value: 'SANG TOTAL',
-                              child: Text('SANG TOTAL'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'PLASMA',
-                              child: Text('PLASMA'),
-                            ),
-                            DropdownMenuItem(value: 'PSC', child: Text('PSC')),
-                            DropdownMenuItem(
-                              value: 'CRACHAT',
-                              child: Text('CRACHAT'),
-                            ),
-                            DropdownMenuItem(value: 'LCR', child: Text('LCR')),
-                            DropdownMenuItem(
-                              value: 'SELLES',
-                              child: Text('SELLES'),
-                            ),
-                            DropdownMenuItem(value: 'PV', child: Text('PV')),
-                            DropdownMenuItem(
-                              value: 'Autre',
-                              child: Text('Autre'),
-                            ),
-                          ],
-                          decoration: const InputDecoration(
-                            labelText: 'Nature du prélèvement',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => setState(() => _sampleNature = v),
-                          validator: (v) =>
-                              v == null ? 'Sélectionnez la nature' : null,
-                        ),
-                      ),
+  Widget _buildForm() {
+    return Form(
+      key: _formKey,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // ===== Contexte (site + km) — bandeau compact non éditable =====
+          _ContextHeader(
+            siteName: _siteName.isEmpty ? 'Site #$_siteId' : _siteName,
+            circuitName:
+                _circuitName.isEmpty ? '#$_circuitId' : _circuitName,
+            mileage: _mileageCtl.text,
+          ),
+          const SizedBox(height: 14),
 
-                      // Identifiant patient
-                      Padding(
-                        padding: pad,
-                        child: TextFormField(
-                          controller: _patientCtl,
-                          decoration: const InputDecoration(
-                            labelText: 'Code patient',
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (v) => (v == null || v.trim().isEmpty)
-                              ? 'Saisissez le code patient'
-                              : null,
-                        ),
-                      ),
-
-                      // Identifiant échantillon (optionnel)
-                      Padding(
-                        padding: pad,
-                        child: TextFormField(
-                          controller: _sampleIdCtl,
-                          decoration: const InputDecoration(
-                            labelText: 'Identifiant échantillon (si dispo)',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-
-                      // Date/heure de prélèvement
-                      Padding(
-                        padding: pad,
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: TextFormField(
-                                controller: _collectionDateCtl,
-                                readOnly: true,
-                                decoration: InputDecoration(
-                                  labelText: 'Date de prélèvement',
-                                  border: const OutlineInputBorder(),
-                                  suffixIcon: IconButton(
-                                    icon: const Icon(
-                                      Icons.calendar_today_outlined,
-                                    ),
-                                    onPressed: () =>
-                                        _pickDate(_collectionDateCtl),
-                                  ),
-                                ),
-                                validator: (v) =>
-                                    (v == null || v.trim().isEmpty)
-                                    ? 'Choisissez la date'
-                                    : null,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: TextFormField(
-                                controller: _collectionTimeCtl,
-                                readOnly: true,
-                                decoration: InputDecoration(
-                                  labelText: 'Heure de prélèvement',
-                                  border: const OutlineInputBorder(),
-                                  suffixIcon: IconButton(
-                                    icon: const Icon(Icons.schedule_outlined),
-                                    onPressed: () =>
-                                        _pickTime(_collectionTimeCtl),
-                                  ),
-                                ),
-                                validator: (v) =>
-                                    (v == null || v.trim().isEmpty)
-                                    ? 'Choisissez l’heure'
-                                    : null,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      // Date/heure de collecte (pickup)
-                      Padding(
-                        padding: pad,
-                        child: TextFormField(
-                          controller: _pickupDateCtl,
-                          readOnly: true,
-                          decoration: InputDecoration(
-                            labelText: 'Date/Heure de collecte',
-                            border: const OutlineInputBorder(),
-                            suffixIcon: IconButton(
-                              icon: const Icon(Icons.calendar_month_outlined),
-                              onPressed: () async {
-                                // Choix date/heure rapide
-                                await _pickDate(_pickupDateCtl);
-                                final date = _pickupDateCtl.text
-                                    .split(' ')
-                                    .first;
-                                final timeCtl = TextEditingController(
-                                  text: DateFormat(
-                                    'HH:mm',
-                                  ).format(DateTime.now()),
-                                );
-                                await _pickTime(timeCtl);
-                                _pickupDateCtl.text = '$date ${timeCtl.text}';
-                              },
-                            ),
-                          ),
-                          validator: (v) => (v == null || v.trim().isEmpty)
-                              ? 'Choisissez la date/heure'
-                              : null,
-                        ),
-                      ),
-
-                      // Labo destination
-                      Padding(
-                        padding: pad,
-                        child: DropdownButtonFormField<int>(
-                          value: _labId,
-                          items: _labItems(),
-                          decoration: const InputDecoration(
-                            labelText: 'Laboratoire de destination',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => setState(() => _labId = v),
-                          validator: (v) =>
-                              v == null ? 'Sélectionnez un laboratoire' : null,
-                        ),
-                      ),
-
-                      // Garder site + kilométrage
-                      Padding(
-                        padding: pad,
-                        child: CheckboxListTile(
-                          value: _keepSiteAndMileage,
-                          onChanged: (v) =>
-                              setState(() => _keepSiteAndMileage = v ?? true),
-                          title: const Text(
-                            'Conserver site et kilométrage pour la prochaine saisie',
-                          ),
-                          controlAffinity: ListTileControlAffinity.leading,
-                        ),
-                      ),
-
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: pad,
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            onPressed: _saving ? null : _submit,
-                            icon: _saving
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.check),
-                            label: Text(
-                              _saving ? 'Enregistrement...' : 'Valider',
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+          // ===== Identification =====
+          FormSection(
+            title: 'Identification',
+            icon: Icons.badge_outlined,
+            child: Column(
+              children: [
+                TextFormField(
+                  controller: _patientCtl,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Code patient *',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'Saisissez le code patient'
+                      : null,
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _sampleIdCtl,
+                  decoration: const InputDecoration(
+                    labelText: 'Identifiant échantillon (si dispo)',
+                    border: OutlineInputBorder(),
                   ),
                 ),
-        );
-      },
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ===== Type & nature =====
+          FormSection(
+            title: 'Nature du prélèvement',
+            icon: Icons.science_outlined,
+            child: Column(
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: _sampleType,
+                  items: const [
+                    DropdownMenuItem(value: 'BI', child: Text('BI')),
+                    DropdownMenuItem(value: 'BS', child: Text('BS')),
+                    DropdownMenuItem(value: 'CV', child: Text('CV')),
+                    DropdownMenuItem(value: 'EID', child: Text('EID')),
+                    DropdownMenuItem(value: 'PrEP', child: Text('PrEP')),
+                    DropdownMenuItem(value: 'IVSA', child: Text('IVSA')),
+                    DropdownMenuItem(value: 'TB', child: Text('TB')),
+                    DropdownMenuItem(value: 'HPV', child: Text('HPV')),
+                    DropdownMenuItem(value: 'Autre', child: Text('Autre')),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Nature du bilan demandé *',
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (v) => setState(() => _sampleType = v),
+                  validator: (v) =>
+                      v == null ? 'Sélectionnez un type' : null,
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue: _sampleNature,
+                  items: const [
+                    DropdownMenuItem(value: 'DBS', child: Text('DBS')),
+                    DropdownMenuItem(
+                        value: 'SANG TOTAL', child: Text('SANG TOTAL')),
+                    DropdownMenuItem(
+                        value: 'PLASMA', child: Text('PLASMA')),
+                    DropdownMenuItem(value: 'PSC', child: Text('PSC')),
+                    DropdownMenuItem(
+                        value: 'CRACHAT', child: Text('CRACHAT')),
+                    DropdownMenuItem(value: 'LCR', child: Text('LCR')),
+                    DropdownMenuItem(
+                        value: 'SELLES', child: Text('SELLES')),
+                    DropdownMenuItem(value: 'PV', child: Text('PV')),
+                    DropdownMenuItem(value: 'Autre', child: Text('Autre')),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Nature du prélèvement *',
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (v) => setState(() => _sampleNature = v),
+                  validator: (v) =>
+                      v == null ? 'Sélectionnez la nature' : null,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ===== Dates =====
+          FormSection(
+            title: 'Dates',
+            icon: Icons.event_outlined,
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _collectionDateCtl,
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: 'Date prélèvement *',
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            tooltip: 'Sélectionner une date',
+                            icon: const Icon(
+                                Icons.calendar_today_outlined),
+                            onPressed: () => _pickDate(_collectionDateCtl),
+                          ),
+                        ),
+                        validator: CustomDateUtils.validateCollectionDate,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _collectionTimeCtl,
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: 'Heure *',
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            tooltip: "Sélectionner une heure",
+                            icon: const Icon(Icons.schedule_outlined),
+                            onPressed: () => _pickTime(_collectionTimeCtl),
+                          ),
+                        ),
+                        validator: (v) => (v == null || v.trim().isEmpty)
+                            ? 'Choisissez l\'heure'
+                            : null,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _pickupDateCtl,
+                  readOnly: true,
+                  decoration: InputDecoration(
+                    labelText: 'Date/Heure de collecte *',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      tooltip: 'Sélectionner une date',
+                      icon: const Icon(Icons.calendar_month_outlined),
+                      onPressed: () async {
+                        await _pickDate(_pickupDateCtl);
+                        final date = _pickupDateCtl.text.split(' ').first;
+                        final timeCtl = TextEditingController(
+                          text: DateFormat('HH:mm')
+                              .format(DateTime.now()),
+                        );
+                        await _pickTime(timeCtl);
+                        _pickupDateCtl.text = '$date ${timeCtl.text}';
+                      },
+                    ),
+                  ),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'Choisissez la date/heure'
+                      : null,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ===== Destination =====
+          FormSection(
+            title: 'Destination',
+            icon: Icons.biotech_outlined,
+            child: DropdownButtonFormField<int>(
+              initialValue: _labId,
+              items: _labItems(),
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Laboratoire de destination *',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (v) => setState(() => _labId = v),
+              validator: (v) =>
+                  v == null ? 'Sélectionnez un laboratoire' : null,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ===== Préférence de saisie =====
+          FormSection(
+            title: 'Préférences',
+            icon: Icons.tune_outlined,
+            child: CheckboxListTile(
+              value: _keepSiteAndMileage,
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              onChanged: (v) =>
+                  setState(() => _keepSiteAndMileage = v ?? true),
+              title: const Text(
+                'Conserver site et kilométrage pour la saisie suivante',
+                style: TextStyle(fontSize: 13),
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          ),
+          // Espace pour ne pas que la dernière section soit collée à la
+          // barre persistante de validation.
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+/// En-tête compact du contexte de collecte (site + circuit + km) : non
+/// éditable depuis cet écran, affiché en pleine largeur en haut du
+/// formulaire pour rappeler au convoyeur "où" il se trouve.
+class _ContextHeader extends StatelessWidget {
+  const _ContextHeader({
+    required this.siteName,
+    required this.circuitName,
+    required this.mileage,
+  });
+
+  final String siteName;
+  final String circuitName;
+  final String mileage;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primaryContainer.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+            color: theme.colorScheme.primary.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.place, color: Colors.white),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  siteName,
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.bold),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  'Circuit : $circuitName',
+                  style: theme.textTheme.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.speed,
+                    size: 14, color: theme.colorScheme.primary),
+                const SizedBox(width: 4),
+                Text(
+                  '${mileage.isEmpty ? '—' : mileage} km',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

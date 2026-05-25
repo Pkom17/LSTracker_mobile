@@ -75,11 +75,9 @@ class _ResultsReadyLabsScreenState extends State<ResultsReadyLabsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: const Text('Résultats prêts — par labo')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.accept,
@@ -135,8 +133,6 @@ class _ResultsReadyLabsScreenState extends State<ResultsReadyLabsScreen> {
                     },
                   ),
                 ),
-        );
-      },
     );
   }
 }

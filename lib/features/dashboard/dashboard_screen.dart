@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:lstracker/features/dashboard/dashboard_admin_screen.dart';
 import 'package:lstracker/features/dashboard/dashboard_conveyor_screen.dart';
 import 'package:lstracker/features/dashboard/dashboard_lab_screen.dart';
+import 'package:lstracker/features/dashboard/dashboard_user_screen.dart';
 
 import '../../data/db/sample_dao.dart';
 
@@ -10,8 +11,7 @@ class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key, required this.userRole});
 
   @override
-  State<DashboardScreen> createState() =>
-      _DashboardScreenState();
+  State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
@@ -43,14 +43,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     if (widget.userRole == 'CONVOYEUR') {
-      return const DashboardConveyorScreen(); 
+      return const DashboardConveyorScreen();
     } else if (widget.userRole == 'BIOLOGISTE') {
-      return const DashboardLabScreen(); 
+      return const DashboardLabScreen();
+    } else if (widget.userRole == 'USER') {
+      return const DashboardUserScreen();
     } else if (widget.userRole == 'ADMIN') {
       return const DashboardAdminScreen();
     }
-    return const Scaffold(
-      body: Center(child: Text('Rôle non reconnu')),
-    );
+    return const Scaffold(body: Center(child: Text('Rôle non reconnu')));
   }
 }

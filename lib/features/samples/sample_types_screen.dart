@@ -115,45 +115,11 @@ class _SampleTypesScreenState extends State<SampleTypesScreen> {
     return 'Échantillons — $st';
   }
 
-  Widget _statusHint(BuildContext context) {
-    if (statuses == null || statuses!.isEmpty) {
-      // Un seul statut → sous-titre discret
-      final st = (status ?? SampleStatus.onTransit).replaceAll('_', ' ');
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-        child: Text(
-          'Filtre: $st',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      );
-    }
-
-    // Multi-statuts → on affiche des chips compactes
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 6,
-        children: statuses!
-            .map(
-              (s) => Chip(
-                label: Text(s.replaceAll('_', ' ')),
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            )
-            .toList(),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: Text(_titleText())),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.collect,
@@ -234,8 +200,6 @@ class _SampleTypesScreenState extends State<SampleTypesScreen> {
                     },
                   ),
           ),
-        );
-      },
     );
   }
 }

@@ -3,48 +3,61 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/widgets.dart';
 import 'package:lstracker/data/services/dio_client.dart';
+import 'package:lstracker/data/services/log_service.dart';
 import 'package:lstracker/data/services/sync_service.dart';
 
-/// Gère le push/pull automatique tant que l’app est ouverte.
-/// - intervalle périodique
-/// - déclenchement sur reprise d’app
+/// Gère le push/pull automatique tant que l'app est ouverte.
+///
+/// Stratégie :
+/// - timer périodique (15 min par défaut)
+/// - déclenchement sur reprise d'app (resumed)
 /// - déclenchement à la reconnexion réseau
+/// - **back-off exponentiel** sur erreur (60s → 2min → 5min → 15min, plafond)
+///   pour éviter le hammering du serveur en panne
+/// - throttle 60s pour éviter les déclenchements multiples rapprochés
 class AutoSyncManager with WidgetsBindingObserver {
   AutoSyncManager._();
   static final AutoSyncManager instance = AutoSyncManager._();
+
+  static const _tag = 'AutoSync';
+
+  // Back-off : on multiplie l'intervalle minimum après chaque échec consécutif.
+  // 0 échec → 60s. 1 → 2min. 2 → 5min. 3+ → 15min (plafond).
+  static const _backoffSteps = <Duration>[
+    Duration(seconds: 60),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+    Duration(minutes: 15),
+  ];
 
   final _sync = SyncService(dio: DioClient.instance.dio);
   Timer? _timer;
   StreamSubscription<List<ConnectivityResult>>? _connSub;
   bool _running = false;
   DateTime? _lastRun;
+  int _consecutiveFailures = 0;
 
   /// Démarre le mécanisme auto-sync.
-  /// [interval] : période entre deux sync (par défaut 15 minutes).
   void start({Duration interval = const Duration(minutes: 15)}) {
-    // Évite les doubles démarrages
     if (_timer != null || _connSub != null) return;
 
-    // Observe cycle de vie
     WidgetsBinding.instance.addObserver(this);
 
-    // Périodique
     _timer = Timer.periodic(interval, (_) => _runIfNeeded(reason: 'timer'));
 
-    // Réseau
     _connSub = Connectivity().onConnectivityChanged.listen((results) {
-      // results est une List<ConnectivityResult>
       final hasNetwork = results.any((r) => r != ConnectivityResult.none);
       if (hasNetwork) {
+        LogService.instance.debug(_tag, 'réseau retrouvé');
         _runIfNeeded(reason: 'network');
       }
     });
 
-    // Premier run léger (avec petit délai pour laisser l’UI se poser)
     Future.delayed(
       const Duration(seconds: 5),
       () => _runIfNeeded(reason: 'initial'),
     );
+    LogService.instance.info(_tag, 'auto-sync démarré (intervalle: ${interval.inMinutes}min)');
   }
 
   /// Arrête le mécanisme auto-sync (à appeler au logout).
@@ -54,9 +67,11 @@ class AutoSyncManager with WidgetsBindingObserver {
     _connSub?.cancel();
     _connSub = null;
     WidgetsBinding.instance.removeObserver(this);
+    _consecutiveFailures = 0;
+    _lastRun = null;
+    LogService.instance.info(_tag, 'auto-sync arrêté');
   }
 
-  /// Appelé quand l’app revient au premier plan.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -64,31 +79,61 @@ class AutoSyncManager with WidgetsBindingObserver {
     }
   }
 
-  /// Déclenche un push+pull si pas déjà en cours, avec une
-  /// petite logique d’espacement (throttle) de 60s.
+  /// Délai minimum à respecter avant le prochain run, en fonction du
+  /// nombre d'échecs consécutifs.
+  Duration get _currentMinInterval {
+    final idx = _consecutiveFailures.clamp(0, _backoffSteps.length - 1);
+    return _backoffSteps[idx];
+  }
+
+  /// Déclenche un push+pull si pas déjà en cours et si la dernière exécution
+  /// est plus vieille que le délai courant (avec back-off exponentiel).
   Future<void> _runIfNeeded({required String reason}) async {
-    if (_running) return;
-    if (_lastRun != null &&
-        DateTime.now().difference(_lastRun!) < const Duration(seconds: 60)) {
+    if (_running) {
+      LogService.instance.debug(_tag, 'skip ($reason): déjà en cours');
       return;
     }
+    if (_lastRun != null) {
+      final elapsed = DateTime.now().difference(_lastRun!);
+      final minInterval = _currentMinInterval;
+      if (elapsed < minInterval) {
+        LogService.instance.debug(
+          _tag,
+          'skip ($reason): ${elapsed.inSeconds}s écoulés, min ${minInterval.inSeconds}s (échecs consécutifs: $_consecutiveFailures)',
+        );
+        return;
+      }
+    }
+
     _running = true;
     try {
-      await _sync.run();
+      LogService.instance.info(_tag, 'run déclenché (raison: $reason)');
+      final result = await _sync.run();
       _lastRun = DateTime.now();
-      // Tu peux brancher ici un petit bus d’événements/Logs si besoin
-      // ex: debugPrint('[AutoSync] completed ($reason)');
-    } catch (_) {
-      // silencieux pour ne pas gêner l’UI
+      if (result.hasError) {
+        _consecutiveFailures = (_consecutiveFailures + 1).clamp(0, _backoffSteps.length - 1);
+        LogService.instance.warn(
+          _tag,
+          'run terminé avec erreur(s) — back-off: ${_currentMinInterval.inSeconds}s',
+        );
+      } else {
+        if (_consecutiveFailures > 0) {
+          LogService.instance.info(_tag, 'reprise après $_consecutiveFailures échec(s)');
+        }
+        _consecutiveFailures = 0;
+      }
+    } catch (e, st) {
+      _lastRun = DateTime.now();
+      _consecutiveFailures = (_consecutiveFailures + 1).clamp(0, _backoffSteps.length - 1);
+      LogService.instance.error(_tag, 'run a planté', error: e, stackTrace: st);
     } finally {
       _running = false;
     }
   }
 
   /// À appeler juste après une nouvelle soumission locale (collecte, dépôt, etc.).
+  /// Pousse uniquement (rapide), le pull viendra via le périodique.
   void pushNow() {
-    // On ne fait qu’un PUSH ici pour être rapide,
-    // le PULL viendra via le périodique / reprise / reconnexion.
     unawaited(_safePush());
   }
 
@@ -96,10 +141,14 @@ class AutoSyncManager with WidgetsBindingObserver {
     if (_running) return;
     _running = true;
     try {
-      await _sync.pushDirty();
+      LogService.instance.info(_tag, 'pushNow déclenché');
+      final pushed = await _sync.pushDirty();
       _lastRun = DateTime.now();
-    } catch (_) {
-      // silencieux
+      _consecutiveFailures = 0;
+      LogService.instance.info(_tag, 'pushNow: $pushed élément(s) envoyé(s)');
+    } catch (e, st) {
+      _consecutiveFailures = (_consecutiveFailures + 1).clamp(0, _backoffSteps.length - 1);
+      LogService.instance.error(_tag, 'pushNow a échoué', error: e, stackTrace: st);
     } finally {
       _running = false;
     }

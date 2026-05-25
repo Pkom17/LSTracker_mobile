@@ -292,9 +292,13 @@ class SampleDao {
       'ACCEPTED_AT_TB_LAB',
       'ACCEPTED_AT_DISTRICT_LAB',
     ]);
-    final resultReady = await _countWhere('sample_status IN (?)', [
+    // ANALYSIS_FAILED EXCLU ici : il a son propre compteur `analysisFailed`
+    // ci-dessous. Avant ce fix, l'agrégat `resultReady + analysisFailed`
+    // utilisé dans les badges double-comptait les échecs.
+    // Cohérent avec le backend (`result_ready` = analysis_released_date NOT NULL,
+    // qui ne capture pas les échecs).
+    final resultReady = await _countWhere('sample_status = ?', [
       'ANALYSIS_DONE',
-      'ANALYSIS_FAILED',
     ]);
     final resultCollected = await _countWhere('sample_status = ?', [
       'RESULT_COLLECTED',
@@ -923,7 +927,8 @@ extension SyncHelpers on SampleDao {
     return rows.map((m) => Sample.fromMap(m)).toList();
   }
 
-  /// Marque comme synchronisés à partir du mapping uuid -> externalId renvoyé par le serveur
+  /// Marque comme synchronisés à partir du mapping uuid -> externalId renvoyé par le serveur.
+  /// Remet aussi à zéro les drapeaux d'erreur de sync pour les rows concernées.
   Future<void> markPushed(Map<String, String> uuidToExternalId) async {
     if (uuidToExternalId.isEmpty) return;
     final db = await _db;
@@ -935,6 +940,8 @@ extension SyncHelpers on SampleDao {
           'external_id': externalId,
           'dirty': 0,
           'lastupdated_at': DateTime.now().toIso8601String(),
+          'last_sync_attempt': DateTime.now().toIso8601String(),
+          'last_sync_error': null,
         },
         where: 'uuid = ?',
         whereArgs: [uuid],
@@ -943,46 +950,207 @@ extension SyncHelpers on SampleDao {
     await batch.commit(noResult: true);
   }
 
-  /// Upsert depuis l’objet serveur (clé: external_id)
-  /// Hypothèse: le serveur renvoie les mêmes colonnes fonctionnelles.
-  Future<void> upsertFromServer(Map<String, dynamic> server) async {
+  /// Marque les rows comme ayant échoué au push (dirty reste à 1, on conserve
+  /// le message d'erreur pour diagnostic UI).
+  Future<void> markPushFailed(List<String> uuids, String errorMessage) async {
+    if (uuids.isEmpty) return;
+    final db = await _db;
+    final now = DateTime.now().toIso8601String();
+    final batch = db.batch();
+    for (final uuid in uuids) {
+      batch.update(
+        'sample',
+        {
+          'last_sync_attempt': now,
+          'last_sync_error': errorMessage,
+        },
+        where: 'uuid = ?',
+        whereArgs: [uuid],
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Nombre d'items en attente de synchronisation.
+  Future<int> countDirty() async {
+    final db = await _db;
+    final rows = await db.rawQuery('SELECT COUNT(*) AS c FROM sample WHERE dirty = 1');
+    final v = rows.isEmpty ? null : rows.first['c'];
+    return (v is int) ? v : int.tryParse(v?.toString() ?? '0') ?? 0;
+  }
+
+  /// Nombre de conflits non résolus.
+  Future<int> countConflicts() async {
+    final db = await _db;
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM sample WHERE has_conflict = 1',
+    );
+    final v = rows.isEmpty ? null : rows.first['c'];
+    return (v is int) ? v : int.tryParse(v?.toString() ?? '0') ?? 0;
+  }
+
+  /// Retourne tous les samples actuellement en conflit, triés du plus ancien
+  /// au plus récent (utilisé par l'écran de résolution).
+  Future<List<Sample>> listConflicts() async {
+    final db = await _db;
+    final rows = await db.query(
+      'sample',
+      where: 'has_conflict = 1',
+      orderBy: 'lastupdated_at ASC',
+    );
+    return rows.map((m) => Sample.fromMap(m)).toList();
+  }
+
+  /// Résout un conflit en gardant la version locale : on lève le flag
+  /// [has_conflict] mais on conserve [dirty=1] pour que le prochain push
+  /// renvoie la version locale au serveur (qui écrasera la version serveur).
+  Future<void> resolveConflictKeepLocal(String uuid) async {
+    final db = await _db;
+    await db.update(
+      'sample',
+      {
+        'has_conflict': 0,
+        // dirty reste à 1 — le push le renverra au serveur
+        'last_sync_error': null,
+        'lastupdated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'uuid = ? AND has_conflict = 1',
+      whereArgs: [uuid],
+    );
+  }
+
+  /// Résout un conflit en acceptant la version serveur : on récupère
+  /// les champs serveur (passés en paramètre depuis le DTO) et on les
+  /// applique en écrasant les modifs locales. Le row redevient propre
+  /// (dirty=0, has_conflict=0).
+  ///
+  /// `serverData` doit avoir le format du payload pull serveur (mêmes clés
+  /// que `_serverToLocalMap`).
+  Future<void> resolveConflictAcceptServer(String uuid,
+      Map<String, dynamic> serverData) async {
+    final db = await _db;
+    final m = _serverToLocalMap(serverData);
+    await db.update(
+      'sample',
+      {
+        ...m,
+        'dirty': 0,
+        'has_conflict': 0,
+        'last_sync_error': null,
+        'server_version': serverData['version'],
+        'lastupdated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'uuid = ?',
+      whereArgs: [uuid],
+    );
+  }
+
+  /// Variante d'accept-server sans appel réseau : si on n'a pas le payload
+  /// serveur sous la main (les champs serveur ne sont pas conservés
+  /// séparément), on se contente d'effacer le flag conflit et de marquer
+  /// dirty=0 pour que le prochain pull réécrive cette ligne avec les
+  /// données serveur.
+  Future<void> resolveConflictDiscardLocal(String uuid) async {
+    final db = await _db;
+    // On force dirty=0 → upsertFromServer pourra réécrire au prochain pull.
+    // On supprime le row pour forcer un re-pull complet de cette ligne.
+    await db.delete(
+      'sample',
+      where: 'uuid = ? AND has_conflict = 1',
+      whereArgs: [uuid],
+    );
+  }
+
+  /// Recherche un sample par UUID (utile pour la résolution de conflit).
+  Future<Sample?> findByUuid(String uuid) async {
+    final db = await _db;
+    final rows = await db.query('sample',
+        where: 'uuid = ?', whereArgs: [uuid], limit: 1);
+    if (rows.isEmpty) return null;
+    return Sample.fromMap(rows.first);
+  }
+
+  /// Upsert depuis l'objet serveur (clé: external_id).
+  ///
+  /// Règle de protection contre la perte de données : si un row local existe
+  /// déjà avec [dirty]=1 (= modification locale non encore poussée), on
+  /// **n'écrase pas** ses champs. On flague à la place [has_conflict]=1 pour
+  /// que l'UI puisse alerter l'utilisateur. Le row dirty sera poussé au
+  /// prochain run, ce qui réconciliera côté serveur.
+  ///
+  /// Retourne true si l'opération a été appliquée, false si elle a été
+  /// short-circuitée pour cause de conflit.
+  Future<bool> upsertFromServer(Map<String, dynamic> server) async {
     final db = await _db;
 
     final externalId = (server['external_id'] ?? server['id'])?.toString();
-    if (externalId == null || externalId.isEmpty) return;
+    if (externalId == null || externalId.isEmpty) return false;
 
-    // Normalise un map prêt pour insert/update local
     final m = _serverToLocalMap(server);
+    final serverVersion = server['version'];
 
-    // Existe déjà ?
-    final rows = await db.query(
+    // Cherche d'abord par external_id, puis par uuid en fallback (un row local
+    // créé offline n'a pas encore d'external_id avant son premier push).
+    var rows = await db.query(
       'sample',
       where: 'external_id = ?',
       whereArgs: [externalId],
       limit: 1,
     );
+    if (rows.isEmpty && m['uuid'] != null) {
+      rows = await db.query(
+        'sample',
+        where: 'uuid = ?',
+        whereArgs: [m['uuid']],
+        limit: 1,
+      );
+    }
 
     if (rows.isEmpty) {
-      // insert
       await db.insert('sample', {
         ...m,
         'external_id': externalId,
-        'dirty': 0, // cohérent avec serveur
+        'dirty': 0,
+        'has_conflict': 0,
+        'server_version': serverVersion,
       });
-    } else {
-      // update (ne pas écraser uuid local si présent)
+      return true;
+    }
+
+    final existing = rows.first;
+    final isDirty = (existing['dirty'] as int? ?? 0) == 1;
+
+    if (isDirty) {
+      // Protection : on ne touche pas aux champs métier, on lie juste
+      // l'external_id (si manquant) et on flague le conflit.
       await db.update(
         'sample',
         {
-          ...m,
           'external_id': externalId,
-          'dirty': 0,
-          'lastupdated_at': DateTime.now().toIso8601String(),
+          'has_conflict': 1,
+          'server_version': serverVersion,
         },
-        where: 'external_id = ?',
-        whereArgs: [externalId],
+        where: 'id = ?',
+        whereArgs: [existing['id']],
       );
+      return false;
     }
+
+    // Row local clean → on accepte la version serveur.
+    await db.update(
+      'sample',
+      {
+        ...m,
+        'external_id': externalId,
+        'dirty': 0,
+        'has_conflict': 0,
+        'server_version': serverVersion,
+        'lastupdated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [existing['id']],
+    );
+    return true;
   }
 
   Map<String, Object?> _serverToLocalMap(Map<String, dynamic> s) {

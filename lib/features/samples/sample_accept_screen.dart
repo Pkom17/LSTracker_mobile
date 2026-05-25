@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/widgets/form_section.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
 
 import '../../data/db/app_database.dart';
@@ -82,7 +83,7 @@ class _SampleAcceptScreenState extends State<SampleAcceptScreen> {
           labText = (rows.first['name'] ?? 'Labo #${s.destinationLabId}')
               .toString();
         } else {
-          labText = 'Labo #${s!.destinationLabId}';
+          labText = 'Labo #${s.destinationLabId}';
         }
       }
       if (!mounted) return;
@@ -165,16 +166,26 @@ class _SampleAcceptScreenState extends State<SampleAcceptScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
-          appBar: AppBar(title: const Text('Accepter l’échantillon')),
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
+          appBar: AppBar(title: const Text('Accepter l\'échantillon')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.accept,
             userRole: userRole,
           ),
+          persistentFooterButtons: _loading
+              ? null
+              : [
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _submit,
+                      icon: const Icon(Icons.verified_outlined),
+                      label: const Text('Accepter l\'échantillon'),
+                    ),
+                  ),
+                ],
           body: _loading
               ? const Center(child: CircularProgressIndicator())
               : Form(
@@ -182,86 +193,101 @@ class _SampleAcceptScreenState extends State<SampleAcceptScreen> {
                   child: ListView(
                     padding: const EdgeInsets.all(16),
                     children: [
-                      TextFormField(
-                        readOnly: true,
-                        initialValue: _destLabDisplay,
-                        decoration: const InputDecoration(
-                          labelText: 'Labo de destination',
-                          border: OutlineInputBorder(),
+                      // ===== Échantillon (lecture seule) =====
+                      FormSection(
+                        title: 'Échantillon',
+                        icon: Icons.biotech_outlined,
+                        child: TextFormField(
+                          readOnly: true,
+                          initialValue: _destLabDisplay,
+                          decoration: const InputDecoration(
+                            labelText: 'Labo de destination',
+                            border: OutlineInputBorder(),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _patientCodeCtl,
-                        decoration: const InputDecoration(
-                          labelText: 'Code patient',
-                          border: OutlineInputBorder(),
+
+                      // ===== Identification =====
+                      FormSection(
+                        title: 'Identification',
+                        icon: Icons.badge_outlined,
+                        child: Column(
+                          children: [
+                            TextFormField(
+                              controller: _patientCodeCtl,
+                              textInputAction: TextInputAction.next,
+                              decoration: const InputDecoration(
+                                labelText: 'Code patient *',
+                                border: OutlineInputBorder(),
+                              ),
+                              validator: (v) =>
+                                  (v == null || v.trim().isEmpty)
+                                      ? 'Code du patient'
+                                      : null,
+                            ),
+                            const SizedBox(height: 10),
+                            TextFormField(
+                              controller: _labNumberCtl,
+                              decoration: const InputDecoration(
+                                labelText: 'Numéro labo attribué *',
+                                border: OutlineInputBorder(),
+                              ),
+                              validator: (v) =>
+                                  (v == null || v.trim().isEmpty)
+                                      ? 'Saisissez un numéro labo'
+                                      : null,
+                            ),
+                          ],
                         ),
-                        validator: (v) => (v == null || v.trim().isEmpty)
-                            ? 'Code du patient'
-                            : null,
                       ),
                       const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _labNumberCtl,
-                        decoration: const InputDecoration(
-                          labelText: 'Numéro labo attribué',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (v) => (v == null || v.trim().isEmpty)
-                            ? 'Saisissez un numéro labo'
-                            : null,
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _dateCtl,
-                              readOnly: true,
-                              decoration: InputDecoration(
-                                labelText: 'Date d’acceptation',
-                                border: const OutlineInputBorder(),
-                                suffixIcon: IconButton(
-                                  icon: const Icon(
-                                    Icons.calendar_month_outlined,
+
+                      // ===== Date/Heure =====
+                      FormSection(
+                        title: 'Date d\'acceptation',
+                        icon: Icons.event_outlined,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextFormField(
+                                controller: _dateCtl,
+                                readOnly: true,
+                                decoration: InputDecoration(
+                                  labelText: 'Date *',
+                                  border: const OutlineInputBorder(),
+                                  suffixIcon: IconButton(
+                                    tooltip: 'Sélectionner une date',
+                                    icon: const Icon(
+                                        Icons.calendar_month_outlined),
+                                    onPressed: _pickDate,
                                   ),
-                                  onPressed: _pickDate,
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _timeCtl,
-                              readOnly: true,
-                              decoration: InputDecoration(
-                                labelText: 'Heure d’acceptation',
-                                border: const OutlineInputBorder(),
-                                suffixIcon: IconButton(
-                                  icon: const Icon(Icons.access_time),
-                                  onPressed: _pickTime,
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _timeCtl,
+                                readOnly: true,
+                                decoration: InputDecoration(
+                                  labelText: 'Heure *',
+                                  border: const OutlineInputBorder(),
+                                  suffixIcon: IconButton(
+                                    tooltip: "Sélectionner une heure",
+                                    icon: const Icon(Icons.access_time),
+                                    onPressed: _pickTime,
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: _submit,
-                          icon: const Icon(Icons.verified_outlined),
-                          label: const Text('Accepter'),
+                          ],
                         ),
                       ),
+                      const SizedBox(height: 8),
                     ],
                   ),
                 ),
-        );
-      },
     );
   }
 }

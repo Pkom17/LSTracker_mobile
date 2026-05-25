@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:lstracker/data/services/auto_sync_manager.dart';
 import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/widgets/form_section.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
 
 import '../../data/db/app_database.dart';
@@ -172,16 +173,29 @@ class _SampleRejectScreenState extends State<SampleRejectScreen> {
   @override
   Widget build(BuildContext context) {
     final count = _ids.length;
-    return FutureBuilder<String?>(
-      future: AuthUtils.getUserRole(),
-      builder: (context, snapshot) {
-        final userRole = snapshot.data ?? 'ADMIN';
-        return Scaffold(
+    // Rôle préchargé via AuthUtils.prime() au boot, lookup synchrone.
+    final userRole = AuthUtils.roleOrNull() ?? 'ADMIN';
+    return Scaffold(
           appBar: AppBar(title: Text('Rejeter — $count sélection(s)')),
           bottomNavigationBar: GlobalBottomNav(
             current: BottomTab.accept,
             userRole: userRole,
           ),
+          persistentFooterButtons: _loading
+              ? null
+              : [
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _submit,
+                      icon: const Icon(Icons.block),
+                      label: Text('Rejeter $count échantillon(s)'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.red.shade700,
+                      ),
+                    ),
+                  ),
+                ],
           body: _loading
               ? const Center(child: CircularProgressIndicator())
               : Form(
@@ -189,78 +203,113 @@ class _SampleRejectScreenState extends State<SampleRejectScreen> {
                   child: ListView(
                     padding: const EdgeInsets.all(16),
                     children: [
-                      DropdownButtonFormField<int>(
-                        value: _rejectionTypeId,
-                        isExpanded: true,
-                        items: _rtItems(),
-                        decoration: const InputDecoration(
-                          labelText: 'Motif de rejet',
-                          border: OutlineInputBorder(),
+                      // Bandeau alerte (rouge clair) — l'utilisateur doit
+                      // comprendre que c'est une action lourde de sens.
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.red.shade200),
                         ),
-                        onChanged: (v) => setState(() => _rejectionTypeId = v),
-                        validator: (v) =>
-                            v == null ? 'Choisissez un motif' : null,
+                        child: Row(
+                          children: [
+                            Icon(Icons.warning_amber_rounded,
+                                color: Colors.red.shade700),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Vous allez rejeter $count échantillon(s). Cette action est tracée.',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.red.shade900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+
+                      // ===== Motif =====
+                      FormSection(
+                        title: 'Motif de rejet',
+                        icon: Icons.report_problem_outlined,
+                        child: Column(
+                          children: [
+                            DropdownButtonFormField<int>(
+                              initialValue: _rejectionTypeId,
+                              isExpanded: true,
+                              items: _rtItems(),
+                              decoration: const InputDecoration(
+                                labelText: 'Motif *',
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: (v) =>
+                                  setState(() => _rejectionTypeId = v),
+                              validator: (v) =>
+                                  v == null ? 'Choisissez un motif' : null,
+                            ),
+                            const SizedBox(height: 10),
+                            TextFormField(
+                              controller: _commentCtl,
+                              minLines: 2,
+                              maxLines: 4,
+                              decoration: const InputDecoration(
+                                labelText: 'Commentaire (optionnel)',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _commentCtl,
-                        minLines: 2,
-                        maxLines: 4,
-                        decoration: const InputDecoration(
-                          labelText: 'Commentaire (optionnel)',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _dateCtl,
-                              readOnly: true,
-                              decoration: InputDecoration(
-                                labelText: 'Date de rejet',
-                                border: const OutlineInputBorder(),
-                                suffixIcon: IconButton(
-                                  icon: const Icon(
-                                    Icons.calendar_month_outlined,
+
+                      // ===== Date/heure =====
+                      FormSection(
+                        title: 'Date de rejet',
+                        icon: Icons.event_outlined,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextFormField(
+                                controller: _dateCtl,
+                                readOnly: true,
+                                decoration: InputDecoration(
+                                  labelText: 'Date *',
+                                  border: const OutlineInputBorder(),
+                                  suffixIcon: IconButton(
+                                    tooltip: 'Sélectionner une date',
+                                    icon: const Icon(
+                                        Icons.calendar_month_outlined),
+                                    onPressed: _pickDate,
                                   ),
-                                  onPressed: _pickDate,
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _timeCtl,
-                              readOnly: true,
-                              decoration: InputDecoration(
-                                labelText: 'Heure de rejet',
-                                border: const OutlineInputBorder(),
-                                suffixIcon: IconButton(
-                                  icon: const Icon(Icons.access_time),
-                                  onPressed: _pickTime,
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _timeCtl,
+                                readOnly: true,
+                                decoration: InputDecoration(
+                                  labelText: 'Heure *',
+                                  border: const OutlineInputBorder(),
+                                  suffixIcon: IconButton(
+                                    tooltip: "Sélectionner une heure",
+                                    icon: const Icon(Icons.access_time),
+                                    onPressed: _pickTime,
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: _submit,
-                          icon: const Icon(Icons.block),
-                          label: const Text('Rejeter'),
+                          ],
                         ),
                       ),
+                      const SizedBox(height: 8),
                     ],
                   ),
                 ),
-        );
-      },
     );
   }
 }

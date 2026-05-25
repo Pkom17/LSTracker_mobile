@@ -1,4 +1,6 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:lstracker/data/db/app_database.dart';
+import 'package:lstracker/data/services/log_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthStore {
@@ -28,6 +30,46 @@ class AuthStore {
     await _secure.delete(key: _kRefreshToken);
     await _secure.delete(key: _kRole);
     await _secure.delete(key: _kUserId);
+  }
+
+  /// Nettoyage complet à appeler au logout pour empêcher la fuite de
+  /// données entre utilisateurs (un autre user qui se connecte ne doit
+  /// pas voir les samples / metadata de l'utilisateur précédent).
+  ///
+  /// Supprime :
+  ///  - secure storage (tokens / role / userId)
+  ///  - SharedPreferences sync.last_pull_at (force pull complet au prochain login)
+  ///  - toutes les rows de la table sample (incluant les dirty=1 — donc à
+  ///    n'appeler qu'après que l'utilisateur a poussé ses changements, ou
+  ///    en cas de logout forcé après confirmation utilisateur)
+  ///  - tables metadata (lab, circuit, site, rejection_type, circuit_site)
+  Future<void> purgeLocalDataForLogout({bool keepUsername = true}) async {
+    LogService.instance.info('Auth', 'logout: purge des données locales');
+    await clearSession();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('sync.last_pull_at');
+      if (!keepUsername) {
+        await prefs.remove(_kSavedUsername);
+      }
+    } catch (e, st) {
+      LogService.instance.warn('Auth', 'logout: purge prefs partielle',
+          error: e, stackTrace: st);
+    }
+    try {
+      final db = await AppDatabase.instance.database;
+      // Ordre des deletes : tables dépendantes d'abord (FK virtuel)
+      await db.delete('sample');
+      await db.delete('circuit_site');
+      await db.delete('site');
+      await db.delete('lab');
+      await db.delete('circuit');
+      await db.delete('rejection_type');
+      LogService.instance.info('Auth', 'logout: tables locales vidées');
+    } catch (e, st) {
+      LogService.instance.error('Auth', 'logout: purge BD a échoué',
+          error: e, stackTrace: st);
+    }
   }
 
   Future<String?> get accessToken async =>

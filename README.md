@@ -127,6 +127,8 @@ flutter build appbundle --release --target=lib/main_prod.dart
 
 ## Signature et keystore
 
+> Voir [docs/KEYSTORE.md](docs/KEYSTORE.md) pour la procédure complète : backup, restauration sur nouveau poste, Play App Signing, rotation.
+
 Le keystore et son `key.properties` ne sont **jamais committés** (cf. `.gitignore`).
 
 ### Setup initial sur un nouveau poste

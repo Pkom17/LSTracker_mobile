@@ -97,7 +97,7 @@ Future<void> main() async {
   await ConnectivityService.instance.start();
 
   // Basculer l’API sur l’environnement DEMO
-  AppConfig.overrideBase('http://38.242.195.91:9200');
+  AppConfig.overrideBase('https://lstracker-demo.itech-civ.org');
 
   final authStore = AuthStore();
   final boot = await bootstrap(authStore);

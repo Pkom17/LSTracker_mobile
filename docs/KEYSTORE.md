@@ -95,10 +95,10 @@ chmod 600 key.properties
 
 ```bash
 cd <repo-mobile>
-flutter build apk --release --target=lib/main_demo.dart
+flutter build apk --release --flavor demo --target=lib/main_demo.dart
 ```
 
-Si pas d'erreur → setup OK. L'APK généré (`build/app/outputs/flutter-apk/app-release.apk`) est signé.
+Si pas d'erreur → setup OK. L'APK généré (`build/app/outputs/flutter-apk/app-demo-release.apk`) est signé.
 
 ### 5. Vérifier la signature de l'APK généré
 

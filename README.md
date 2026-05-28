@@ -22,15 +22,17 @@ Stack : **Flutter 3.8+** · **Dart 3** · **SQLite (sqflite)** · **Dio** · **R
 
 ## Architecture des environnements
 
-Trois entry-points Dart pointent vers trois backends différents — un seul `applicationId` Android (`ci.itech.lstracker`) pour rester compatible Play Store.
+Trois **flavors Android** alignés sur trois entry-points Dart. Chaque flavor a son propre `applicationId` (sauf prod, inchangé pour rester compatible Play Store) → demo et dev s'installent **à côté** de la prod sur un même appareil, sans conflit de package.
 
-| Entry-point | API ciblée | Usage |
-|---|---|---|
-| `lib/main.dart` | `http://10.0.2.2:9200` (emulator → localhost) | Dev local, debug |
-| `lib/main_demo.dart` | `http://38.242.195.91:9200` | Build APK distribué hors Play Store |
-| `lib/main_prod.dart` | `https://lstracker.org` | Build AAB pour Play Store |
+| Flavor | Entry-point | applicationId | Label | API ciblée |
+|---|---|---|---|---|
+| `dev` | `lib/main.dart` | `ci.itech.lstracker.dev` | LSTracker DEV | `http://10.0.2.2:9200` (emulator → localhost) |
+| `demo` | `lib/main_demo.dart` | `ci.itech.lstracker.demo` | LSTracker DEMO | `https://lstracker-demo.itech-civ.org` |
+| `prod` | `lib/main_prod.dart` | `ci.itech.lstracker` | LSTracker | `https://lstracker.org` |
 
-L'URL d'API est surchargée à l'init via `AppConfig.overrideBase(...)` dans chaque entry-point.
+L'URL d'API est surchargée à l'init via `AppConfig.overrideBase(...)` dans chaque entry-point. Le `applicationId` et le label sont gérés par les flavors dans `android/app/build.gradle.kts`.
+
+> ⚠️ Le flavor **prod garde `ci.itech.lstracker`** (identique à l'app publiée). NE PAS lui ajouter de suffixe, sinon les mises à jour Play Store casseraient.
 
 ---
 
@@ -55,23 +57,18 @@ flutter pub get
 
 ## Développement local
 
-Démarrer l'app sur emulator/device avec hot reload :
+Démarrer l'app sur emulator/device avec hot reload. Avec les flavors, il faut
+préciser `--flavor` ET `--target` :
 
 ```bash
-# Default : main.dart, API locale (http://10.0.2.2:9200)
-flutter run
+# Dev (API locale http://10.0.2.2:9200)
+flutter run --flavor dev --target=lib/main.dart
 
-# Ou explicitement
-flutter run -t lib/main.dart
+# Tester sur l'env DEMO (API lstracker-demo.itech-civ.org)
+flutter run --flavor demo --target=lib/main_demo.dart
 ```
 
-Tester sur l'env DEMO sans recompiler en release :
-
-```bash
-flutter run -t lib/main_demo.dart
-```
-
-Lancer les tests + analyze :
+Lancer les tests + analyze (pas besoin de flavor) :
 
 ```bash
 flutter analyze
@@ -83,44 +80,46 @@ flutter test
 ## Builds release (APK / AAB)
 
 > **Prérequis :** keystore configuré (cf. [section suivante](#signature-et-keystore)).
+> Toujours associer `--flavor X` au bon `--target` (sinon mismatch env/applicationId).
 
 ### APK demo — distribution hors Play Store
 
 ```bash
-flutter build apk --release --target=lib/main_demo.dart
+flutter build apk --release --flavor demo --target=lib/main_demo.dart
 ```
 
-Sortie : `build/app/outputs/flutter-apk/app-release.apk`
+Sortie : `build/app/outputs/flutter-apk/app-demo-release.apk`
+applicationId : `ci.itech.lstracker.demo` (s'installe à côté de la prod)
 
 Renommer pour distribution :
 
 ```bash
-mv build/app/outputs/flutter-apk/app-release.apk \
+mv build/app/outputs/flutter-apk/app-demo-release.apk \
    ~/Desktop/lstracker-demo-v2.2.0.apk
 ```
 
 ### AAB prod — upload Play Store
 
 ```bash
-flutter build appbundle --release --target=lib/main_prod.dart
+flutter build appbundle --release --flavor prod --target=lib/main_prod.dart
 ```
 
-Sortie : `build/app/outputs/bundle/release/app-release.aab`
+Sortie : `build/app/outputs/bundle/prodRelease/app-prod-release.aab`
+applicationId : `ci.itech.lstracker` (compatible avec l'app publiée)
 
-### APK debug — tests internes rapides
+### APK dev — tests internes rapides
 
 ```bash
-flutter build apk --debug --target=lib/main.dart
+flutter build apk --debug --flavor dev --target=lib/main.dart
 ```
 
-Sortie : `build/app/outputs/flutter-apk/app-debug.apk`
+Sortie : `build/app/outputs/flutter-apk/app-dev-debug.apk`
 
-### Build complet (les 3 en série)
+### Build demo + prod en série
 
 ```bash
-# Demo + Prod en une commande
-flutter build apk --release --target=lib/main_demo.dart && \
-flutter build appbundle --release --target=lib/main_prod.dart
+flutter build apk --release --flavor demo --target=lib/main_demo.dart && \
+flutter build appbundle --release --flavor prod --target=lib/main_prod.dart
 ```
 
 ---
@@ -168,10 +167,11 @@ keytool -list -v \
    ```yaml
    version: 2.3.0+7        # versionName+versionCode (le code doit toujours augmenter)
    ```
-2. Build le bundle :
+2. Build le bundle (flavor **prod** → applicationId `ci.itech.lstracker`) :
    ```bash
-   flutter build appbundle --release --target=lib/main_prod.dart
+   flutter build appbundle --release --flavor prod --target=lib/main_prod.dart
    ```
+   Sortie : `build/app/outputs/bundle/prodRelease/app-prod-release.aab`
 3. Upload sur [Play Console](https://play.google.com/console) → Release → Production → Create new release.
 4. Joindre les notes de version (changelog).
 

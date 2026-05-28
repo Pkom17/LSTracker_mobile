@@ -26,6 +26,35 @@ android {
         }
     }
 
+    // Flavors = 3 environnements alignés sur les entry-points Dart
+    // (lib/main.dart, main_demo.dart, main_prod.dart).
+    //  - prod : applicationId INCHANGÉ (ci.itech.lstracker) → compatible avec
+    //           l'app déjà publiée sur le Play Store (même signature requise).
+    //  - dev / demo : suffixe d'applicationId → s'installent À CÔTÉ de la prod
+    //           sur un même appareil, sans conflit de package.
+    // Le label (nom sous l'icône) est injecté via manifestPlaceholders[appLabel]
+    // que le AndroidManifest référence en android:label="${appLabel}".
+    flavorDimensions += "env"
+    productFlavors {
+        create("prod") {
+            dimension = "env"
+            // pas de suffixe : reste ci.itech.lstracker
+            manifestPlaceholders["appLabel"] = "LSTracker"
+        }
+        create("demo") {
+            dimension = "env"
+            applicationIdSuffix = ".demo"
+            versionNameSuffix = "-demo"
+            manifestPlaceholders["appLabel"] = "LSTracker DEMO"
+        }
+        create("dev") {
+            dimension = "env"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "LSTracker DEV"
+        }
+    }
+
     // Signature release (facultatif mais propre)
     val keystoreProps = Properties()
     val keystoreFile = rootProject.file("key.properties")

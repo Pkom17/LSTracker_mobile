@@ -8,6 +8,7 @@ import 'package:lstracker/features/samples/sample_result_ready_screen.dart';
 import 'package:lstracker/utils/auth_utils.dart';
 import 'package:lstracker/utils/custom_date_utils.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
+import 'package:lstracker/widgets/sample_list_item.dart';
 import 'package:lstracker/widgets/skeleton.dart';
 
 import '../../data/db/sample_dao.dart';
@@ -431,99 +432,35 @@ class _SampleListScreenState extends State<SampleListScreen> {
     );
   }
 
-  // Couleur du badge selon le type d'échantillon (programme). Alignée sur la
-  // palette du dashboard web pour la cohérence visuelle. Type inconnu → gris.
-  static const Map<String, Color> _typeColors = {
-    'BI': Color(0xFF3B82F6),   // bleu
-    'BS': Color(0xFF06B6D4),   // cyan
-    'CV': Color(0xFF4F46E5),   // indigo
-    'EID': Color(0xFFEC4899),  // rose
-    'TB': Color(0xFF16A34A),   // vert
-    'HPV': Color(0xFF9333EA),  // violet
-    'PrEP': Color(0xFFF59E0B), // ambre
-    'IVSA': Color(0xFF0891B2), // teal
-  };
-
-  Color _typeColor(String? type) {
-    if (type == null) return const Color(0xFF64748B);
-    return _typeColors[type.trim().toUpperCase()] ?? const Color(0xFF64748B);
-  }
-
-  // Badge type d'échantillon (chip coloré compact). Sert de "leading" visuel.
-  Widget _typeBadge(Sample s) {
-    final type = (s.sampleType?.trim().isNotEmpty == true)
-        ? s.sampleType!.trim()
-        : '—';
-    final color = _typeColor(s.sampleType);
-    return Container(
-      width: 44,
-      height: 44,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text(
-        type,
-        textAlign: TextAlign.center,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.w700,
-          fontSize: type.length > 3 ? 10 : 12,
-        ),
-      ),
-    );
-  }
-
-  // Une ligne d'info icône + texte pour le corps du list item.
-  Widget _infoLine(IconData icon, String text, {Color? color}) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 14, color: color ?? Colors.grey.shade500),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _tileFor(Sample s) {
     final title = s.sampleIdentifier?.isNotEmpty == true
         ? s.sampleIdentifier!
         : (s.uuid);
 
-    // Ligne prélèvement : "Prélèvement: SANG TOTAL le 12/05/2024"
-    String? prelevement;
-    final nature = s.sampleNature?.trim();
     final dateTxt = s.collectionDate?.isNotEmpty == true
         ? CustomDateUtils.toHumanReadable(s.collectionDate)
         : null;
-    if (nature?.isNotEmpty == true && dateTxt != null) {
-      prelevement = 'Prélèvement: $nature le $dateTxt';
-    } else if (nature?.isNotEmpty == true) {
-      prelevement = 'Prélèvement: $nature';
-    } else if (dateTxt != null) {
-      prelevement = 'Prélèvement le $dateTxt';
-    }
-
+    final prelevement = SampleListItem.prelevementText(s.sampleNature, dateTxt);
     final labName = s.destinationLabId != null
         ? (labNames[s.destinationLabId!] ?? '#${s.destinationLabId}')
         : null;
 
     final isChecked = s.id != null && selectedIds.contains(s.id);
     final isDirty = (s.dirty) == 1;
+
+    final lines = <SampleInfoLine>[
+      if (s.patientIdentifier?.isNotEmpty == true)
+        SampleInfoLine(Icons.person_outline, 'Patient: ${s.patientIdentifier}'),
+      if (prelevement != null)
+        SampleInfoLine(Icons.water_drop_outlined, prelevement,
+            color: SampleListItem.typeColor(s.sampleType)),
+      if (labName != null)
+        SampleInfoLine(Icons.local_hospital_outlined, 'Labo: $labName'),
+      if (s.fromSiteName?.isNotEmpty == true)
+        SampleInfoLine(Icons.place_outlined, 'Site: ${s.fromSiteName}'),
+      if (s.labNumber?.isNotEmpty == true)
+        SampleInfoLine(Icons.tag, 'N° Labo: ${s.labNumber}'),
+    ];
 
     final syncIcon = Tooltip(
       message: isDirty ? 'Non synchronisé' : 'Synchronisé avec le serveur',
@@ -534,82 +471,29 @@ class _SampleListScreenState extends State<SampleListScreen> {
       ),
     );
 
-    // Corps : lignes d'info (seulement celles présentes).
-    final lines = <Widget>[
-      if (s.patientIdentifier?.isNotEmpty == true)
-        _infoLine(Icons.person_outline, 'Patient: ${s.patientIdentifier}'),
-      if (prelevement != null)
-        _infoLine(Icons.water_drop_outlined, prelevement,
-            color: _typeColor(s.sampleType)),
-      if (labName != null)
-        _infoLine(Icons.local_hospital_outlined, 'Labo: $labName'),
-      if (s.fromSiteName?.isNotEmpty == true)
-        _infoLine(Icons.place_outlined, 'Site: ${s.fromSiteName}'),
-      if (s.labNumber?.isNotEmpty == true)
-        _infoLine(Icons.tag, 'N° Labo: ${s.labNumber}'),
-    ];
-
-    final body = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5),
-        ),
-        const SizedBox(height: 2),
-        ...lines,
-      ],
-    );
-
-    final trailing = selectMode
-        ? Checkbox(value: isChecked, onChanged: (_) => _toggleSelection(s))
-        : Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              syncIcon,
-              const Icon(Icons.chevron_right, color: Colors.grey),
-            ],
-          );
-
-    return Card(
-      elevation: 0.5,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: isChecked ? _typeColor(s.sampleType) : Colors.transparent,
-          width: isChecked ? 1.4 : 0,
-        ),
+    return SampleListItem(
+      title: title,
+      sampleType: s.sampleType,
+      lines: lines,
+      selected: selectMode ? isChecked : null,
+      onSelectedChanged: (_) => _toggleSelection(s),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          syncIcon,
+          const Icon(Icons.chevron_right, color: Colors.grey),
+        ],
       ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () {
-          if (selectMode) {
-            _toggleSelection(s);
-            return;
-          }
-          if (s.id == null) return;
-          Navigator.of(context)
-              .pushNamed(SampleDetailScreen.route, arguments: {'id': s.id});
-        },
-        onLongPress: () => _enterSelectModeWith(s),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _typeBadge(s),
-              const SizedBox(width: 12),
-              Expanded(child: body),
-              const SizedBox(width: 4),
-              trailing,
-            ],
-          ),
-        ),
-      ),
+      onTap: () {
+        if (selectMode) {
+          _toggleSelection(s);
+          return;
+        }
+        if (s.id == null) return;
+        Navigator.of(context)
+            .pushNamed(SampleDetailScreen.route, arguments: {'id': s.id});
+      },
+      onLongPress: () => _enterSelectModeWith(s),
     );
   }
 

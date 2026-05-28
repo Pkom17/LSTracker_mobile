@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:lstracker/data/services/log_service.dart';
 import 'package:lstracker/utils/auth_utils.dart';
+import 'package:lstracker/utils/custom_date_utils.dart';
 import 'package:lstracker/widgets/global_bottom_nav.dart';
+import 'package:lstracker/widgets/sample_list_item.dart';
 import 'package:lstracker/widgets/skeleton.dart';
 
 import '../../data/db/sample_dao.dart';
@@ -266,34 +268,39 @@ class _ResultsCollectedListScreenState
                       }
                       final s = _items[i];
                       final id = s.id!;
-                      final subtitle = [
+                      final dateTxt = (s.collectionDate ?? '').isNotEmpty
+                          ? CustomDateUtils.toHumanReadable(s.collectionDate)
+                          : null;
+                      final lines = <SampleInfoLine>[
                         if ((s.patientIdentifier ?? '').isNotEmpty)
-                          'Patient: ${s.patientIdentifier}',
-                        if ((s.sampleIdentifier ?? '').isNotEmpty)
-                          'ID: ${s.sampleIdentifier}',
-                        if ((s.sampleNature ?? '').isNotEmpty)
-                          'Nature échantillon: ${s.sampleNature}',
+                          SampleInfoLine(Icons.person_outline,
+                              'Patient: ${s.patientIdentifier}'),
+                        if (SampleListItem.prelevementText(
+                                s.sampleNature, dateTxt) !=
+                            null)
+                          SampleInfoLine(
+                              Icons.water_drop_outlined,
+                              SampleListItem.prelevementText(
+                                  s.sampleNature, dateTxt)!,
+                              color: SampleListItem.typeColor(s.sampleType)),
                         if ((s.labNumber ?? '').isNotEmpty)
-                          'Numéro Labo: ${s.labNumber}',
-                        if ((s.collectionDate ?? '').isNotEmpty)
-                          'Prélèvement: ${s.collectionDate}',
+                          SampleInfoLine(Icons.tag, 'N° Labo: ${s.labNumber}'),
                         if ((s.analysisReleasedDate ?? '').isNotEmpty)
-                          'Date de Validation: ${s.analysisReleasedDate}',
-                      ].join('\n');
+                          SampleInfoLine(
+                              Icons.verified_outlined,
+                              'Validation: ${CustomDateUtils.toHumanReadable(s.analysisReleasedDate)}',
+                              color: Colors.green),
+                      ];
 
-                      return Card(
-                        child: CheckboxListTile(
-                          value: _selected.contains(id),
-                          onChanged: (v) => _toggle(id, v ?? false),
-                          title: Text(
-                            s.sampleIdentifier?.isNotEmpty == true
-                                ? s.sampleIdentifier!
-                                : s.uuid,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: subtitle.isEmpty ? null : Text(subtitle),
-                        ),
+                      return SampleListItem(
+                        title: s.sampleIdentifier?.isNotEmpty == true
+                            ? s.sampleIdentifier!
+                            : s.uuid,
+                        sampleType: s.sampleType,
+                        lines: lines,
+                        selected: _selected.contains(id),
+                        onSelectedChanged: (v) => _toggle(id, v ?? false),
+                        onTap: () => _toggle(id, !_selected.contains(id)),
                       );
                     },
                   ),

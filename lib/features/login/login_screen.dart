@@ -82,34 +82,37 @@ class _LoginScreenState extends State<LoginScreen> {
         context,
       ).pushReplacementNamed('/dashboard', arguments: {'role': role});
     } on DioException catch (e) {
-      // Récupère un maximum d’infos utiles
-      final status = e.response?.statusCode;
-      final method = e.requestOptions.method;
-      final uri = e.requestOptions.uri;
+      // Détail technique uniquement en logs (jamais à l'écran) pour le debug.
+      debugPrint('Login DioException: ${e.requestOptions.method} '
+          '${e.requestOptions.uri} → HTTP ${e.response?.statusCode} ; '
+          'message=${e.message} ; data=${e.response?.data}');
 
-      // Essaie d’extraire un message du backend (JSON: message/error/detail)
-      String backendMsg = '';
-      final data = e.response?.data;
-      if (data is Map) {
-        backendMsg = (data['message'] ?? data['error'] ?? data['detail'] ?? '')
-            .toString();
-      } else if (data != null) {
-        backendMsg = data.toString();
+      // Message convivial selon le type d'erreur. On ne renvoie JAMAIS la
+      // réponse brute du backend (peut contenir une stacktrace).
+      final status = e.response?.statusCode;
+      String userMsg;
+      if (status == 401 || status == 403) {
+        userMsg = 'Identifiant ou mot de passe incorrect.';
+      } else if (status == 400) {
+        userMsg = 'Requête invalide. Vérifiez vos informations de connexion.';
+      } else if (status != null && status >= 500) {
+        userMsg = 'Le serveur a rencontré un problème. Réessayez plus tard.';
+      } else if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout ||
+          e.type == DioExceptionType.connectionError) {
+        userMsg = 'Connexion au serveur impossible. Vérifiez votre réseau.';
+      } else {
+        userMsg = 'Échec de la connexion. Réessayez.';
       }
 
       setState(() {
-        _error = [
-          if (status != null) 'HTTP $status',
-          '$method $uri',
-          if (backendMsg.isNotEmpty) backendMsg,
-          if (e.message != null &&
-              (backendMsg.isEmpty || !backendMsg.contains('${e.message}')))
-            '${e.message}',
-        ].where((s) => s.trim().isNotEmpty).join('\n');
+        _error = userMsg;
       });
     } catch (e) {
+      debugPrint('Login unexpected error: $e');
       setState(() {
-        _error = 'Erreur inattendue: $e';
+        _error = 'Une erreur inattendue est survenue. Réessayez.';
       });
     } finally {
       if (mounted) {

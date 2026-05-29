@@ -191,7 +191,6 @@ class _SampleResultReadyScreenState extends State<SampleResultReadyScreen> {
   String? _labNumber;
 
   // Dates (via pickers)
-  DateTime? _analysisStart;
   DateTime? _analysisEnd;
   DateTime? _releasedAt; // obligatoire
 
@@ -253,7 +252,6 @@ class _SampleResultReadyScreenState extends State<SampleResultReadyScreen> {
         _labNumber = s.labNumber;
 
         // Pré-remplir si déjà saisi
-        _analysisStart = _parseIso(s.analysisStartedDate);
         _analysisEnd = _parseIso(s.analysisCompletedDate);
         _releasedAt = _parseIso(s.analysisReleasedDate);
       });
@@ -285,7 +283,6 @@ class _SampleResultReadyScreenState extends State<SampleResultReadyScreen> {
     }
 
     final fields = <String, Object?>{
-      'analysis_started_date': _analysisStart?.toIso8601String(),
       'analysis_completed_date': _analysisEnd?.toIso8601String(),
       'analysis_released_date': _releasedAt!.toIso8601String(),
       // on positionne le statut “résultat prêt / analyse terminée”
@@ -379,16 +376,6 @@ class _SampleResultReadyScreenState extends State<SampleResultReadyScreen> {
                                   ),
                                 ],
                               ),
-                            ),
-                            const SizedBox(height: 12),
-
-                            // Début analyse
-                            DateTimePickerField(
-                              key: const ValueKey('analysis-start'),
-                              dateLabel: 'Début analyse (date)',
-                              timeLabel: 'Début analyse (heure)',
-                              initial: _analysisStart,
-                              onChanged: (dt) => _analysisStart = dt,
                             ),
                             const SizedBox(height: 12),
 

@@ -1,5 +1,15 @@
 # Changelog — LSTracker Mobile
 
+## 2.2.2 (build 8) — 2026-05-29
+
+### Synchronisation OpenELIS
+
+- **Retrait de la saisie « Début analyse »** sur l'écran « résultat prêt » : la date de début d'analyse n'est plus saisie manuellement (champ, état et payload `analysis_started_date` supprimés). Elle est désormais dérivée d'OpenELIS via l'intégration oedatarepo côté serveur. Le modèle/DAO local conserve le champ pour un usage futur.
+
+## 2.2.1 (build 7) — 2026-05-25
+
+- Alignement de version avec le backend (release 2.2.1). Pas de changement fonctionnel mobile.
+
 ## 2.2.0 (build 6) — 2026-05-25
 
 ### Sécurité & confidentialité
